@@ -1,103 +1,86 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import "katex/dist/katex.min.css";
 import LaTeX from "react-latex-next";
-import { startSession, saveAttempt, completeSession } from "./actions"; // さっき作った関数
-import { createClient } from "@supabase/supabase-js"; // Auth取得用
+import { startSession, saveAttempt, completeSession } from "./actions";
 
 type Props = {
-  unit: any;
-  userId: string; // ★親からIDをもらうように変更
+  unit: any;     // Supabaseから取得した単元データ
+  userId: string; // ログインユーザーのID
 };
 
-// 状態管理用の型定義
-type LearningState = "idle" | "watching" | "testing" | "completed";
-
-export default function LessonClient({ unit, userId }: Props) { // propsにuserIdを追加
-
-  // ステータス管理
-  const [status, setStatus] = useState<LearningState>("idle");
-  const [sessionId, setSessionId] = useState<string | null>(null);
-
-  // クイズロジック管理
-  const [quizQueue, setQuizQueue] = useState<any[]>([]); // 出題待ちリスト
-  const [currentQuizIndex, setCurrentQuizIndex] = useState(0);
-  const [clearedTypeIds, setClearedTypeIds] = useState<Set<string>>(new Set()); // クリア済みのQuizType
+export default function LessonClient({ unit, userId }: Props) {
+  // ステータス管理: 待機中 -> 動画視聴中 -> テスト中 -> 完了
+  const [status, setStatus] = useState<"idle" | "watching" | "testing" | "completed">("idle");
   
-  // UI表示管理
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [quizQueue, setQuizQueue] = useState<any[]>([]);
+  const [currentQuizIndex, setCurrentQuizIndex] = useState(0);
+  const [clearedTypeIds, setClearedTypeIds] = useState<Set<string>>(new Set());
   const [selectedChoiceId, setSelectedChoiceId] = useState<string | null>(null);
 
   // ■ 1. 学習開始ボタン
   const handleStart = async () => {
-    if (!userId) return alert("ログインが必要です");
-    
-    // クイズキューの初期化（各タイプから1問ずつランダムにピックアップ）
+    if (!userId) return alert("ログインエラー: IDが見つかりません");
+
+    // クイズキューの初期化（各タイプから1問ずつランダムに選出）
     const initialQueue: any[] = [];
     unit.quiz_types.forEach((qt: any) => {
       if (qt.quizzes.length > 0) {
-        // シャッフルして1つ選ぶ
         const randomQuiz = qt.quizzes[Math.floor(Math.random() * qt.quizzes.length)];
-        // クイズオブジェクトに「親のタイプID」を埋め込んでおく（判定で使うため）
+        // _typeId を持たせておくことで、後で「おかわり」を作る時に使える
         initialQueue.push({ ...randomQuiz, _typeId: qt.id });
       }
     });
-
     setQuizQueue(initialQueue);
-    
-    // DBにセッション作成
+
     try {
+      // サーバーアクション: セッション作成
       const session = await startSession(unit.id, userId);
       setSessionId(session.id);
-      setStatus("watching"); // 動画モードへ
+      setStatus("watching");
     } catch (e) {
       console.error(e);
       alert("開始できませんでした");
     }
   };
 
-  // ■ 2. 動画完了ボタン
+  // ■ 2. 動画完了時（再生終了 or スキップボタン）
   const handleVideoComplete = () => {
-    setStatus("testing"); // テストモードへ
+    setStatus("testing");
   };
 
-  // ■ 3. 回答クリック時の処理
+  // ■ 3. 回答を選択した時
   const handleAnswer = async (choice: any) => {
-    if (selectedChoiceId || !userId || !sessionId) return; // 連打防止
+    if (selectedChoiceId || !sessionId) return; // 二重回答防止
     setSelectedChoiceId(choice.id);
 
     const currentQuiz = quizQueue[currentQuizIndex];
     const isCorrect = choice.is_correct;
     const typeId = currentQuiz._typeId;
 
-    // A. 正解の場合
     if (isCorrect) {
-      // このタイプをクリア済みに登録
+      // 正解ならクリアリストに追加
       const newCleared = new Set(clearedTypeIds);
       newCleared.add(typeId);
       setClearedTypeIds(newCleared);
-    } 
-    // B. 不正解の場合（おかわり追加）
-    else {
-      // 同じタイプの問題リストを取得
+    } else {
+      // 不正解なら「おかわり」を追加（類題ロードロジック）
       const typeData = unit.quiz_types.find((qt: any) => qt.id === typeId);
       if (typeData) {
-        // 「まだキューに入っていない」または「ランダム」な問題を探す
-        // 今回は簡易的に「ランダムに1問選んで最後尾に追加」します
+        // 同じタイプからランダムに1問選んでキューの末尾に追加
         const retryQuiz = typeData.quizzes[Math.floor(Math.random() * typeData.quizzes.length)];
-        
-        // ReactのState更新（キューの最後に追加）
         setQuizQueue((prev) => [...prev, { ...retryQuiz, _typeId: typeId }]);
       }
     }
 
-    // C. DBに保存（非同期で裏で実行）
-    // クリア済みの数（今回正解なら+1した状態）を送る
+    // サーバーアクション: 回答保存
     const currentClearedCount = isCorrect ? clearedTypeIds.size + 1 : clearedTypeIds.size;
     
     await saveAttempt(
       sessionId,
-      userId, 
+      userId,
       currentQuiz.id,
       choice.id,
       isCorrect,
@@ -107,25 +90,21 @@ export default function LessonClient({ unit, userId }: Props) { // propsにuserI
     );
   };
 
-  // ■ 4. 「次へ」ボタン
+  // ■ 4. 次の問題へ
   const handleNext = async () => {
-    setSelectedChoiceId(null); // 選択状態リセット
-
-    // まだ問題があるか？
+    setSelectedChoiceId(null);
     if (currentQuizIndex < quizQueue.length - 1) {
       setCurrentQuizIndex((prev) => prev + 1);
     } else {
-      // 全問終了！
-      // もし全タイプクリアしてなければ（理論上はないはずだが）、ここでチェックも可能
+      // 全問終了時
       if (sessionId) await completeSession(sessionId);
       setStatus("completed");
     }
   };
 
-  // --- 表示用データ ---
-  const currentQuiz = quizQueue[currentQuizIndex];
+  // --- 表示部分 (JSX) ---
 
-  // --- JSX (画面描画) ---
+  // 1. 待機画面
   if (status === "idle") {
     return (
       <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg p-12 text-center">
@@ -141,31 +120,48 @@ export default function LessonClient({ unit, userId }: Props) { // propsにuserI
     );
   }
 
+  // 2. 動画視聴画面（Supabase Storage対応版）
   if (status === "watching") {
     return (
       <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden">
-        <div className="relative bg-black aspect-video">
-          <iframe
-            width="100%"
-            height="100%"
-            src={`https://www.youtube.com/embed/${unit.video_id || 'M5QY2_8704o'}`} // DBに動画IDがあればそれを使う
-            title="Video"
-            allowFullScreen
-            className="absolute inset-0"
-          />
+        <div className="relative bg-black aspect-video flex items-center justify-center">
+          {/* Native Video Player */}
+          {unit.video_url ? (
+            <video
+              src={unit.video_url}
+              controls               // 再生コントローラーを表示
+              autoPlay               // 自動再生
+              className="w-full h-full"
+              onEnded={handleVideoComplete} // 再生終了したら自動でクイズへ
+              controlsList="nodownload"     // ダウンロードボタンを隠す（簡易保護）
+              playsInline                   // スマホで全画面強制しない
+            >
+              <p className="text-white">お使いのブラウザは動画再生に対応していません。</p>
+            </video>
+          ) : (
+            <div className="text-white text-center">
+              <p className="text-xl font-bold">動画が見つかりません</p>
+              <p className="text-sm opacity-80 mt-2">管理画面でvideo_urlを設定してください</p>
+            </div>
+          )}
         </div>
-        <div className="p-6 text-right">
+        
+        <div className="p-4 bg-gray-50 flex justify-end items-center border-t">
+          <p className="text-sm text-gray-500 mr-4">
+            ※ 再生が終わると自動でクイズに進みます
+          </p>
           <button
             onClick={handleVideoComplete}
-            className="bg-green-600 text-white px-6 py-3 rounded-lg font-bold hover:bg-green-700 shadow"
+            className="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg text-sm font-bold hover:bg-gray-300 transition"
           >
-            動画を見終わったのでテストへ進む
+            スキップしてテストへ
           </button>
         </div>
       </div>
     );
   }
 
+  // 3. 完了画面
   if (status === "completed") {
     return (
       <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg p-12 text-center animate-fade-in">
@@ -181,23 +177,23 @@ export default function LessonClient({ unit, userId }: Props) { // propsにuserI
     );
   }
 
-  // --- status === "testing" ---
+  // 4. クイズ画面（ここから下は変更なし）
+  const currentQuiz = quizQueue[currentQuizIndex];
+  
   return (
     <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg p-8 text-gray-900">
-      {/* 進捗バー */}
       <div className="mb-6 flex justify-between text-sm text-gray-500">
         <span>問 {currentQuizIndex + 1} / {quizQueue.length}</span>
         <span>クリア済みタイプ: {clearedTypeIds.size} / {unit.quiz_types.length}</span>
       </div>
 
-      {/* 問題文 */}
       <div className="mb-8">
          <h2 className="text-xl font-bold mb-4">
+           {/* 数式対応 */}
            <LaTeX>{currentQuiz.question}</LaTeX>
          </h2>
       </div>
 
-      {/* 選択肢 */}
       <div className="space-y-4">
         {currentQuiz.choices.map((choice: any) => {
           const isSelected = selectedChoiceId === choice.id;
@@ -245,7 +241,6 @@ export default function LessonClient({ unit, userId }: Props) { // propsにuserI
         })}
       </div>
 
-      {/* 不正解時のおかわり通知 */}
       {selectedChoiceId && (
         <div className="mt-8 text-center animate-fade-in">
           {(() => {
