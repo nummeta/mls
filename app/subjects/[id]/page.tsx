@@ -1,8 +1,39 @@
 import { createClient } from "@/utils/supabase/server";
 import Link from "next/link";
-import { redirect } from "next/navigation"; // 追加
+import { redirect } from "next/navigation";
 
-export default async function SubjectDetail({
+// ■ 修正1: 型定義を 'title' から 'name' に変更
+type Unit = {
+  id: string;
+  name: string;
+  type: string;
+  sort_order: number;
+  max_score: number;
+  intro: string;
+};
+
+type Section = {
+  id: string;
+  name: string; // ★ここを title から name に変更
+  sort_order: number;
+  units: Unit[];
+};
+
+type SubjectData = {
+  id: string;
+  name: string;
+  sections: Section[];
+};
+
+// 時間フォーマット関数
+const formatDuration = (seconds: number) => {
+  if (!seconds) return "--:--";
+  const m = Math.floor(seconds / 60).toString().padStart(2, "0");
+  const s = (seconds % 60).toString().padStart(2, "0");
+  return `${m}:${s}`;
+};
+
+export default async function SubjectPage({
   params,
 }: {
   params: Promise<{ id: string }>;
@@ -10,160 +41,166 @@ export default async function SubjectDetail({
   const { id } = await params;
   const supabase = await createClient();
 
-  // ★変更点: 本物のログインユーザーを取得
   const { data: { user } } = await supabase.auth.getUser();
-
-  // ログインしていなければログイン画面へ飛ばす（門番）
   if (!user) {
     redirect("/login");
   }
-  // 1. 科目(Subject)の情報を取る
-  const { data: subject } = await supabase
+
+  const { data: rawSubject } = await supabase
     .from("subjects")
-    .select("*")
+    .select(`
+      *,
+      sections (
+        *,
+        units (
+          *
+        )
+      )
+    `)
     .eq("id", id)
     .single();
 
-  // 2. 章(Section)と、その中の単元(Unit)を取る
-  const { data: sections } = await supabase
-    .from("sections")
-    .select(`
-      *,
-      units (
-        id,
-        name,
-        sort_order
-      )
-    `)
-    .eq("subject_id", id)
-    .order("sort_order", { ascending: true });
+  const subject = rawSubject as unknown as SubjectData;
 
-  // 3. 【追加】このユーザーの「単元成績」を全部取ってくる
-  // ※ progress_rate が 1 (100%) のものだけ取得すれば「完了」とみなせます
   const { data: myScores } = await supabase
-  .from("unit_scores")
-  .select("unit_id, progress_rate")
-  .eq("user_id", user.id);
+    .from("unit_scores")
+    .select("*")
+    .eq("user_id", user.id);
 
-  // 4. 成績データを「検索しやすい形」に変換する
-  // 例: { "単元ID_A": true, "単元ID_B": false }
-  const completedUnitIds = new Set(
-    myScores
-      ?.filter((score) => score.progress_rate === 1) // 100%完了のものだけ
-      .map((score) => score.unit_id)
-  );
+  const scoreMap = new Map(myScores?.map((s) => [s.unit_id, s]));
 
-  // データの並び替え（Unitをsort_order順に）
-  sections?.forEach((section) => {
-    section.units.sort((a: any, b: any) => a.sort_order - b.sort_order);
-  });
+  if (!subject) return <div>Subject not found</div>;
+
+  const sortedSections = subject.sections.sort((a, b) => a.sort_order - b.sort_order);
 
   return (
-    <div className="min-h-screen bg-gray-50 p-8 font-[family-name:var(--font-geist-sans)]">
-      <div className="max-w-4xl mx-auto">
-        <Link
-          href="/"
-          className="text-gray-500 hover:text-gray-900 mb-6 inline-flex items-center text-sm font-bold"
-        >
-          ← 科目一覧に戻る
-        </Link>
+    <div className="min-h-screen bg-gray-50 pb-20">
+      <div className="bg-white border-b border-gray-100 px-6 py-8 sticky top-0 z-10 shadow-sm">
+        <div className="max-w-3xl mx-auto">
+          <Link href="/" className="text-gray-400 hover:text-gray-600 text-sm font-bold mb-2 inline-block">
+            ← 科目一覧に戻る
+          </Link>
+          <h1 className="text-3xl font-extrabold text-gray-900 tracking-tight">
+            {subject.name}
+          </h1>
+        </div>
+      </div>
 
-        <h1 className="text-3xl font-bold text-gray-900 mb-8 border-b pb-4">
-          {subject?.name}
-        </h1>
+      <div className="max-w-3xl mx-auto px-6 py-8 space-y-12">
+        {sortedSections.map((section) => {
+          const sortedUnits = section.units.sort((a, b) => a.sort_order - b.sort_order);
 
-        <div className="space-y-8">
-          {sections?.map((section) => (
-            <div
-              key={section.id}
-              className="bg-white p-6 rounded-xl shadow-sm border border-gray-200"
-            >
-              <h2 className="text-xl font-bold mb-4 text-gray-800 flex items-center gap-2">
-                <span className="bg-blue-100 text-blue-800 text-sm px-3 py-1 rounded-full">
-                  Chapter {section.sort_order + 1}
+          return (
+            <div key={section.id}>
+              <div className="flex items-center gap-3 mb-6">
+                <span className="flex items-center justify-center w-8 h-8 rounded-full bg-blue-100 text-blue-600 font-bold text-sm">
+                  {section.sort_order}
                 </span>
-                {section.name}
-              </h2>
+                <h2 className="text-xl font-bold text-gray-800">
+                  {/* ■ 修正2: ここを section.title から section.name に変更 */}
+                  {section.name}
+                </h2>
+              </div>
 
-              <ul className="space-y-3">
-                {section.units.map((unit: any) => {
-                  // この単元が完了しているかチェック
-                  const isCompleted = completedUnitIds.has(unit.id);
+              <div className="grid gap-4">
+                {sortedUnits.map((unit) => {
+                  const score = scoreMap.get(unit.id);
+                  const isCompleted = score?.progress_rate === 1;
+                  const isTest = unit.type === 'test';
 
                   return (
-                    <li key={unit.id}>
-                      <Link
-                        href={`/units/${unit.id}`}
-                        className={`
-                          block p-4 rounded-lg border transition-all flex justify-between items-center group
-                          ${
-                            isCompleted
-                              ? "bg-green-50 border-green-200 hover:bg-green-100"
-                              : "bg-gray-50 border-gray-100 hover:bg-white hover:border-blue-300 hover:shadow-md"
-                          }
-                        `}
-                      >
-                        <div className="flex items-center gap-3">
-                          {/* アイコンの出し分け */}
-                          {isCompleted ? (
-                            <div className="bg-green-500 text-white p-1 rounded-full">
-                              <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                className="h-4 w-4"
-                                viewBox="0 0 20 20"
-                                fill="currentColor"
-                              >
-                                <path
-                                  fillRule="evenodd"
-                                  d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                                  clipRule="evenodd"
-                                />
-                              </svg>
+                    <Link
+                      key={unit.id}
+                      href={`/units/${unit.id}`}
+                      className="block group"
+                    >
+                      <div className={`
+                        bg-white rounded-xl p-5 border-2 transition-all duration-200
+                        hover:border-blue-400 hover:shadow-md relative overflow-hidden
+                        ${isCompleted ? "border-green-100 bg-green-50/30" : "border-gray-100"}
+                      `}>
+                        <div className="flex justify-between items-center">
+                          <div className="flex items-center gap-4">
+                            <div className={`
+                              w-10 h-10 rounded-lg flex items-center justify-center text-xl
+                              ${isTest 
+                                ? "bg-orange-100 text-orange-600"
+                                : "bg-blue-50 text-blue-500"
+                              }
+                            `}>
+                              {isTest ? "✍️" : "📺"}
                             </div>
-                          ) : (
-                            <div className="bg-gray-200 text-gray-400 p-1 rounded-full group-hover:bg-blue-500 group-hover:text-white transition-colors">
-                              <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                className="h-4 w-4"
-                                viewBox="0 0 20 20"
-                                fill="currentColor"
-                              >
-                                <path
-                                  fillRule="evenodd"
-                                  d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z"
-                                  clipRule="evenodd"
-                                />
-                              </svg>
+                            
+                            <div>
+                              <h3 className="font-bold text-gray-800 group-hover:text-blue-600 transition-colors">
+                                {unit.name}
+                              </h3>
+                              {isTest && isCompleted ? (
+                                <div className="flex gap-3 text-xs font-bold mt-1">
+                                  <span className="text-blue-600 bg-blue-50 px-2 py-0.5 rounded">
+                                    得点: {score?.raw_score} / {unit.max_score || 100}
+                                  </span>
+                                  {score?.duration && (
+                                    <span className="text-gray-500 bg-gray-100 px-2 py-0.5 rounded flex items-center gap-1">
+                                      ⏱️ {formatDuration(score.duration)}
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                <p className="text-xs text-gray-400 mt-0.5 line-clamp-1">
+                                  {unit.intro || (isTest ? "確認テストに挑戦しよう" : "動画を見て学習しよう")}
+                                </p>
+                              )}
                             </div>
-                          )}
-                          
-                          <span
-                            className={`font-medium ${
-                              isCompleted ? "text-green-800" : "text-gray-700"
-                            }`}
-                          >
-                            {unit.name}
-                          </span>
-                        </div>
+                          </div>
 
-                        {isCompleted && (
-                          <span className="text-xs font-bold text-green-600 bg-white px-2 py-1 rounded border border-green-200">
-                            COMPLETED
-                          </span>
-                        )}
-                      </Link>
-                    </li>
+                          <div>
+                            {isCompleted ? (
+                              isTest ? (
+                                <span className={`text-xs font-extrabold px-3 py-1 rounded-full border
+                                  ${(score?.raw_score || 0) >= (unit.max_score || 100) * 0.8 
+                                    ? "bg-green-100 text-green-700 border-green-200"
+                                    : "bg-orange-100 text-orange-700 border-orange-200"
+                                  }
+                                `}>
+                                  {(() => {
+                                    const rawScore = score?.raw_score || 0;
+                                    const maxScore = unit.max_score || 100;
+                                    const percentage = rawScore / maxScore;
+
+                                    if (percentage === 1) return "PERFECT! 🏆";
+                                    if (percentage >= 0.8) return "EXCELLENT ✨";
+                                    if (percentage >= 0.6) return "PASSED 👍";
+                                    return "RETRY 💪";
+                                  })()}
+                                </span>
+                              ) : (
+                                <div className="flex items-center gap-1 text-green-600 font-bold text-xs bg-green-100 px-3 py-1 rounded-full">
+                                  <span>✔</span>
+                                  <span>DONE</span>
+                                </div>
+                              )
+                            ) : (
+                              <span className="text-gray-300 group-hover:text-blue-400">
+                                ▶
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </Link>
                   );
                 })}
-                {section.units.length === 0 && (
-                  <li className="text-gray-400 text-sm pl-2">
-                    単元がまだありません
-                  </li>
-                )}
-              </ul>
+              </div>
             </div>
-          ))}
-        </div>
+          );
+        })}
+
+        {subject.sections.length === 0 && (
+          <div className="text-center py-20 text-gray-400">
+            章がまだありません
+          </div>
+        )}
       </div>
     </div>
   );

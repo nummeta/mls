@@ -1,7 +1,8 @@
 import { createClient } from "@/utils/supabase/server";
-import { redirect } from "next/navigation"; // リダイレクト用
-import LessonClient from "./LessonClient";
+import { redirect } from "next/navigation";
 import Link from "next/link";
+import LessonClient from "./LessonClient";
+import PaperTestClient from "./PaperTestClient"; // ★追加
 
 export default async function UnitPage({
   params,
@@ -11,15 +12,12 @@ export default async function UnitPage({
   const { id } = await params;
   const supabase = await createClient();
 
-  // ★ここが重要：ログイン中のユーザー情報を取得
   const { data: { user } } = await supabase.auth.getUser();
 
-  // もしログインしていなければ、ログイン画面に飛ばす
   if (!user) {
     redirect("/login");
   }
 
-  // 1. データ取得（Unit + Section + QuizTypes...）
   const { data: unit } = await supabase
     .from("units")
     .select(`
@@ -57,8 +55,12 @@ export default async function UnitPage({
         </Link>
       </div>
       
-      {/* ★ログイン済みの user.id を渡す */}
-      <LessonClient unit={unit} userId={user.id} />
+      {/* ★タイプによって出し分け */}
+      {unit.type === 'test' ? (
+        <PaperTestClient unit={unit} userId={user.id} />
+      ) : (
+        <LessonClient unit={unit} userId={user.id} />
+      )}
     </div>
   );
 }
