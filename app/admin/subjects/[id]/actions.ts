@@ -39,3 +39,29 @@ export async function deleteSection(id: string, subjectId: string) {
 
   revalidatePath(`/admin/subjects/${subjectId}`);
 }
+
+// 3. 章の更新
+export async function updateSection(formData: FormData) {
+  const supabase = await createClient();
+
+  const id = formData.get("id") as string;
+  const name = formData.get("name") as string;
+  const sortOrder = parseInt(formData.get("sort_order") as string) || 0;
+  const subjectId = formData.get("subject_id") as string; // リダイレクト用に必要
+
+  if (!id || !name) return;
+
+  const { error } = await supabase
+    .from("sections")
+    .update({
+      name,
+      sort_order: sortOrder,
+    })
+    .eq("id", id);
+
+  if (error) {
+    throw new Error("章の更新に失敗しました: " + error.message);
+  }
+
+  revalidatePath(`/admin/subjects/${subjectId}`);
+}

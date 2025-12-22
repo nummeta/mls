@@ -2,7 +2,7 @@ import { createClient } from "@/utils/supabase/server";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
-// ■ 修正1: 型定義を 'title' から 'name' に変更
+// 型定義に message を追加
 type Unit = {
   id: string;
   name: string;
@@ -10,11 +10,12 @@ type Unit = {
   sort_order: number;
   max_score: number;
   intro: string;
+  message: string; // ★追加
 };
 
 type Section = {
   id: string;
-  name: string; // ★ここを title から name に変更
+  name: string;
   sort_order: number;
   units: Unit[];
 };
@@ -25,7 +26,6 @@ type SubjectData = {
   sections: Section[];
 };
 
-// 時間フォーマット関数
 const formatDuration = (seconds: number) => {
   if (!seconds) return "--:--";
   const m = Math.floor(seconds / 60).toString().padStart(2, "0");
@@ -42,10 +42,9 @@ export default async function SubjectPage({
   const supabase = await createClient();
 
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user) {
-    redirect("/login");
-  }
+  if (!user) redirect("/login");
 
+  // ★クエリに message を追加
   const { data: rawSubject } = await supabase
     .from("subjects")
     .select(`
@@ -53,7 +52,8 @@ export default async function SubjectPage({
       sections (
         *,
         units (
-          *
+          *,
+          message
         )
       )
     `)
@@ -97,7 +97,6 @@ export default async function SubjectPage({
                   {section.sort_order}
                 </span>
                 <h2 className="text-xl font-bold text-gray-800">
-                  {/* ■ 修正2: ここを section.title から section.name に変更 */}
                   {section.name}
                 </h2>
               </div>
@@ -109,11 +108,7 @@ export default async function SubjectPage({
                   const isTest = unit.type === 'test';
 
                   return (
-                    <Link
-                      key={unit.id}
-                      href={`/units/${unit.id}`}
-                      className="block group"
-                    >
+                    <Link key={unit.id} href={`/units/${unit.id}`} className="block group">
                       <div className={`
                         bg-white rounded-xl p-5 border-2 transition-all duration-200
                         hover:border-blue-400 hover:shadow-md relative overflow-hidden
@@ -123,10 +118,7 @@ export default async function SubjectPage({
                           <div className="flex items-center gap-4">
                             <div className={`
                               w-10 h-10 rounded-lg flex items-center justify-center text-xl
-                              ${isTest 
-                                ? "bg-orange-100 text-orange-600"
-                                : "bg-blue-50 text-blue-500"
-                              }
+                              ${isTest ? "bg-orange-100 text-orange-600" : "bg-blue-50 text-blue-500"}
                             `}>
                               {isTest ? "✍️" : "📺"}
                             </div>
@@ -148,12 +140,14 @@ export default async function SubjectPage({
                                 </div>
                               ) : (
                                 <p className="text-xs text-gray-400 mt-0.5 line-clamp-1">
-                                  {unit.intro || (isTest ? "確認テストに挑戦しよう" : "動画を見て学習しよう")}
+                                  {/* ★ここを修正: intro から message (ポイント) に変更 */}
+                                  {unit.message || unit.intro || (isTest ? "確認テストに挑戦しよう" : "動画を見て学習しよう")}
                                 </p>
                               )}
                             </div>
                           </div>
-
+                          
+                          {/* 右側のバッジ表示部分はそのまま */}
                           <div>
                             {isCompleted ? (
                               isTest ? (
@@ -164,13 +158,10 @@ export default async function SubjectPage({
                                   }
                                 `}>
                                   {(() => {
-                                    const rawScore = score?.raw_score || 0;
-                                    const maxScore = unit.max_score || 100;
-                                    const percentage = rawScore / maxScore;
-
-                                    if (percentage === 1) return "PERFECT! 🏆";
-                                    if (percentage >= 0.8) return "EXCELLENT ✨";
-                                    if (percentage >= 0.6) return "PASSED 👍";
+                                    const p = (score?.raw_score || 0) / (unit.max_score || 100);
+                                    if (p === 1) return "PERFECT! 🏆";
+                                    if (p >= 0.8) return "EXCELLENT ✨";
+                                    if (p >= 0.6) return "PASSED 👍";
                                     return "RETRY 💪";
                                   })()}
                                 </span>
@@ -181,9 +172,7 @@ export default async function SubjectPage({
                                 </div>
                               )
                             ) : (
-                              <span className="text-gray-300 group-hover:text-blue-400">
-                                ▶
-                              </span>
+                              <span className="text-gray-300 group-hover:text-blue-400">▶</span>
                             )}
                           </div>
                         </div>
@@ -195,12 +184,6 @@ export default async function SubjectPage({
             </div>
           );
         })}
-
-        {subject.sections.length === 0 && (
-          <div className="text-center py-20 text-gray-400">
-            章がまだありません
-          </div>
-        )}
       </div>
     </div>
   );

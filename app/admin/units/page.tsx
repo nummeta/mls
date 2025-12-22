@@ -16,7 +16,7 @@ export default async function AdminUnitsPage() {
         name,
         sort_order,
         units (
-          id, name, type, sort_order
+          id, name, type, sort_order, message, intro, outro, video_id
         )
       )
     `)

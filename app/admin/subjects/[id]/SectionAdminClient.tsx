@@ -1,7 +1,7 @@
 "use client";
 
-import { useRef } from "react";
-import { createSection, deleteSection } from "./actions";
+import { useRef, useState, useEffect } from "react";
+import { createSection, deleteSection, updateSection } from "./actions";
 
 type Section = {
   id: string;
@@ -19,13 +19,37 @@ type Subject = {
 export default function SectionAdminClient({ subject }: { subject: Subject }) {
   const formRef = useRef<HTMLFormElement>(null);
 
+  // ★編集中のデータを保持するステート
+  const [editingSection, setEditingSection] = useState<Section | null>(null);
+  
+  // フォーム入力値のステート
+  const [inputName, setInputName] = useState("");
+  const [inputSortOrder, setInputSortOrder] = useState(10);
+
+  // 編集モード切り替え時にフォームに入力する
+  useEffect(() => {
+    if (editingSection) {
+      setInputName(editingSection.name);
+      setInputSortOrder(editingSection.sort_order);
+    } else {
+      setInputName("");
+      setInputSortOrder(10);
+    }
+  }, [editingSection]);
+
   const handleDelete = async (id: string) => {
     if (!confirm("本当に削除しますか？\n含まれる単元も消える可能性があります。")) return;
     try {
       await deleteSection(id, subject.id);
+      if (editingSection?.id === id) setEditingSection(null);
     } catch (e) {
       alert("削除できませんでした");
     }
+  };
+
+  const handleEditClick = (section: Section) => {
+    setEditingSection(section);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   return (
@@ -41,20 +65,47 @@ export default function SectionAdminClient({ subject }: { subject: Subject }) {
         </h1>
       </div>
 
-      {/* 1. 新規追加フォーム */}
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-        <h2 className="text-lg font-bold text-gray-800 mb-4">✨ 新しい章を追加</h2>
+      {/* 1. フォーム (新規・編集兼用) */}
+      <div className={`p-6 rounded-xl shadow-sm border transition-colors
+        ${editingSection ? "bg-yellow-50 border-yellow-200" : "bg-white border-gray-200"}
+      `}>
+        <div className="flex justify-between items-center mb-4">
+          <h2 className={`text-lg font-bold ${editingSection ? "text-yellow-800" : "text-gray-800"}`}>
+            {editingSection ? "✏️ 章を編集" : "✨ 新しい章を追加"}
+          </h2>
+          {editingSection && (
+            <button 
+              onClick={() => setEditingSection(null)}
+              className="text-sm text-gray-500 hover:text-gray-800 underline"
+            >
+              キャンセルして新規作成に戻る
+            </button>
+          )}
+        </div>
         
         <form 
           ref={formRef}
           action={async (formData) => {
-            await createSection(formData);
-            formRef.current?.reset();
+            // 共通パラメータ
+            formData.append("subject_id", subject.id);
+
+            if (editingSection) {
+              // 編集モード
+              formData.append("id", editingSection.id);
+              await updateSection(formData);
+              setEditingSection(null);
+              alert("更新しました！");
+            } else {
+              // 新規モード
+              await createSection(formData);
+              alert("追加しました！");
+            }
+            // フォームリセット
+            setInputName("");
+            setInputSortOrder(10);
           }}
           className="flex flex-col md:flex-row gap-4 items-end"
         >
-          <input type="hidden" name="subject_id" value={subject.id} />
-
           <div className="flex-1 w-full">
             <label className="block text-sm font-bold text-gray-700 mb-1">章の名前</label>
             <input 
@@ -62,6 +113,8 @@ export default function SectionAdminClient({ subject }: { subject: Subject }) {
               type="text" 
               placeholder="例: 数と式, 二次関数" 
               required
+              value={inputName}
+              onChange={(e) => setInputName(e.target.value)}
               className="w-full border border-gray-300 rounded px-3 py-2 text-gray-900 focus:ring-2 focus:ring-blue-500 outline-none"
             />
           </div>
@@ -71,16 +124,19 @@ export default function SectionAdminClient({ subject }: { subject: Subject }) {
             <input 
               name="sort_order" 
               type="number" 
-              defaultValue={10} 
+              value={inputSortOrder}
+              onChange={(e) => setInputSortOrder(Number(e.target.value))}
               className="w-full border border-gray-300 rounded px-3 py-2 text-gray-900 focus:ring-2 focus:ring-blue-500 outline-none"
             />
           </div>
 
           <button 
             type="submit" 
-            className="w-full md:w-auto bg-blue-600 text-white px-6 py-2 rounded font-bold hover:bg-blue-700 transition"
+            className={`w-full md:w-auto px-6 py-2 rounded font-bold text-white transition
+              ${editingSection ? "bg-yellow-600 hover:bg-yellow-700" : "bg-blue-600 hover:bg-blue-700"}
+            `}
           >
-            追加
+            {editingSection ? "更新する" : "追加"}
           </button>
         </form>
       </div>
@@ -100,7 +156,7 @@ export default function SectionAdminClient({ subject }: { subject: Subject }) {
             {subject.sections
               .sort((a, b) => a.sort_order - b.sort_order)
               .map((section) => (
-              <tr key={section.id} className="hover:bg-gray-50">
+              <tr key={section.id} className={`hover:bg-gray-50 ${editingSection?.id === section.id ? "bg-yellow-50" : ""}`}>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                   {section.sort_order}
                 </td>
@@ -110,7 +166,13 @@ export default function SectionAdminClient({ subject }: { subject: Subject }) {
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                   {(section.units as any)?.[0]?.count || 0} 単元
                 </td>
-                <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+                  <button
+                    onClick={() => handleEditClick(section)}
+                    className="text-yellow-600 hover:text-yellow-900 bg-yellow-50 px-3 py-1 rounded hover:bg-yellow-100 transition"
+                  >
+                    編集
+                  </button>
                   <button
                     onClick={() => handleDelete(section.id)}
                     className="text-red-600 hover:text-red-900 bg-red-50 px-3 py-1 rounded hover:bg-red-100 transition"
