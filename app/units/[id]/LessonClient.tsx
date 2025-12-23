@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { startSession, completeSession, saveAttempt } from "./actions";
 import { createClient } from "@/utils/supabase/client";
 import Latex from "react-latex-next";
@@ -37,6 +37,15 @@ type Score = {
 };
 type QuizWithMeta = Quiz & { typeId: string; typeTopic: string };
 
+function shuffleArray<T>(array: T[]): T[] {
+  const newArray = [...array];
+  for (let i = newArray.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [newArray[i], newArray[j]] = [newArray[j], newArray[i]];
+  }
+  return newArray;
+}
+
 export default function LessonClient({ 
   unit, 
   userId, 
@@ -51,35 +60,114 @@ export default function LessonClient({
 
   const [step, setStep] = useState<'intro' | 'video' | 'quiz' | 'outro'>('intro');
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  
+  const [isRequesting, setIsRequesting] = useState(false);
+  
+  // ★追加: クリア済みのクイズタイプ(トピック)IDを管理
+  // これにより「何種類のトピックを理解したか」を計算します
+  const [clearedTypeIds, setClearedTypeIds] = useState<Set<string>>(new Set());
 
-  // ★修正: エラーログを出力するように強化
+  // ★追加: 総クイズタイプ数
+  const totalTypeCount = unit.quiz_types?.length || 0;
+
+  // --- 1. 学習開始時の初期化 ---
   useEffect(() => {
-    const updateStatus = async () => {
-      console.log("Updating status...", unit.id);
-      
+    const initUnit = async () => {
+      if (!userId || !unit?.id) {
+        console.warn("⚠️ [initUnit] userIdまたはunit.idがないためスキップします");
+        return;
+      }
+
+      console.log("🔄 [initUnit] 開始時刻の記録を試みます...", { unitId: unit.id, userId });
+
+      const { data, error } = await supabase.from("profiles").update({
+        current_unit_id: unit.id,
+        current_unit_started_at: new Date().toISOString(), 
+        last_seen_at: new Date().toISOString(),
+      })
+      .eq("id", userId)
+      .select();
+
+      if (error) {
+        console.error("❌ [initUnit] DB更新エラー:", error);
+      } else {
+        console.log("✅ [initUnit] 開始時刻を記録しました:", data);
+      }
+    };
+    initUnit();
+  }, [unit.id, userId]);
+
+  // --- 2. ステータス更新 & 生存報告 ---
+  useEffect(() => {
+    const updateActivity = async () => {
+      if (!userId) return;
+
       const { error } = await supabase.from("profiles").update({
         current_unit_id: unit.id,
+        current_activity: step,
         last_seen_at: new Date().toISOString(),
       }).eq("id", userId);
 
       if (error) {
-        console.error("ステータス更新エラー:", error);
-        // 開発中のみアラートを出す（原因特定のため）
-        // alert(`ステータス更新エラー: ${error.message}`); 
+        console.error("❌ [updateActivity] ステータス更新エラー:", error);
       }
     };
 
-    updateStatus();
-    const interval = setInterval(updateStatus, 60000);
+    updateActivity();
+    const interval = setInterval(updateActivity, 30000);
     return () => clearInterval(interval);
-  }, [unit.id, userId]);
+  }, [unit.id, userId, step]); 
 
-  // --- クイズロジック (変更なし) ---
+  // --- 3. リクエスト状態の確認 ---
+  useEffect(() => {
+    const checkRequest = async () => {
+      const { data, error } = await supabase
+        .from("help_requests")
+        .select("id")
+        .eq("student_id", userId)
+        .eq("status", "pending")
+        .limit(1); 
+      
+      if (error) {
+        console.error("❌ リクエスト確認エラー:", error);
+        return;
+      }
+      setIsRequesting(!!data && data.length > 0);
+    };
+    checkRequest();
+    
+    const channel = supabase.channel("my_request_status")
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'help_requests', filter: `student_id=eq.${userId}` }, 
+        () => checkRequest()
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [userId]);
+
+  const handleToggleRequest = async () => {
+    if (isRequesting) {
+      await supabase.from("help_requests").update({ status: 'resolved' }).eq("student_id", userId).eq("status", "pending");
+      setIsRequesting(false);
+      alert("リクエストを取り下げました");
+    } else {
+      await supabase.from("help_requests").insert({ student_id: userId, status: "pending" });
+      setIsRequesting(true);
+      alert("講師を呼び出しました。少々お待ちください。");
+    }
+  };
+
+  // --- クイズロジック ---
   const allPoolQuizzes = useMemo(() => {
     const list: QuizWithMeta[] = [];
     unit.quiz_types?.forEach(qt => {
       qt.quizzes.forEach(q => {
-        list.push({ ...q, typeId: qt.id, typeTopic: qt.topic });
+        list.push({ 
+          ...q, 
+          choices: shuffleArray(q.choices),
+          typeId: qt.id, 
+          typeTopic: qt.topic 
+        });
       });
     });
     return list;
@@ -89,7 +177,15 @@ export default function LessonClient({
     const initialSet: QuizWithMeta[] = [];
     unit.quiz_types?.forEach(qt => {
       if (qt.quizzes.length > 0) {
-        initialSet.push({ ...qt.quizzes[0], typeId: qt.id, typeTopic: qt.topic });
+        const topicQuizzes: QuizWithMeta[] = qt.quizzes.map(q => ({
+          ...q,
+          choices: shuffleArray(q.choices),
+          typeId: qt.id,
+          typeTopic: qt.topic
+        }));
+        const shuffledQuizzes = shuffleArray(topicQuizzes);
+        const picked = shuffledQuizzes.slice(0, 2);
+        initialSet.push(...picked);
       }
     });
     return initialSet;
@@ -130,13 +226,26 @@ export default function LessonClient({
     setIsQuizAdded(false);
   };
 
+  // ★修正: ここでスコア計算と送信を行う
   const handleAnswer = async (choice: Choice) => {
     if (showExplanation || !currentQuiz) return;
 
     setSelectedChoiceId(choice.id);
     setShowExplanation(true);
 
-    if (!choice.is_correct) {
+    // ★修正: 正解数をローカルで計算
+    let currentClearedCount = clearedTypeIds.size;
+    
+    if (choice.is_correct) {
+      // 正解した場合、まだクリアしていないタイプならセットに追加
+      if (!clearedTypeIds.has(currentQuiz.typeId)) {
+        const newSet = new Set(clearedTypeIds);
+        newSet.add(currentQuiz.typeId);
+        setClearedTypeIds(newSet);
+        currentClearedCount = newSet.size; // 更新後のサイズ
+      }
+    } else {
+      // 不正解時の追加出題ロジック
       let candidates = allPoolQuizzes.filter(q => 
         q.typeId === currentQuiz.typeId && 
         !quizQueue.some(queued => queued.id === q.id) 
@@ -151,6 +260,7 @@ export default function LessonClient({
       }
     }
 
+    // ★修正: 0,0 ではなく、計算した値を渡す
     if (currentSessionId) {
       await saveAttempt(
         currentSessionId, 
@@ -159,7 +269,8 @@ export default function LessonClient({
         choice.id, 
         choice.is_correct, 
         unit.id, 
-        0, 0 
+        currentClearedCount, // クリア済みトピック数
+        totalTypeCount       // トピック総数
       );
     }
   };
@@ -187,13 +298,32 @@ export default function LessonClient({
   return (
     <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
       
-      <div className="p-6 border-b border-gray-100 flex justify-between items-center">
-        <h1 className="text-2xl font-extrabold text-gray-900">{unit.name}</h1>
-        {isAlreadyCompleted && (
-          <span className="bg-green-100 text-green-700 text-xs px-2 py-1 rounded font-bold">
-            COMPLETED
-          </span>
-        )}
+      {/* ヘッダー */}
+      <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-white sticky top-0 z-20 shadow-sm">
+        <div className="flex items-center gap-4">
+          <h1 className="text-2xl font-extrabold text-gray-900">{unit.name}</h1>
+          {isAlreadyCompleted && (
+            <span className="bg-green-100 text-green-700 text-xs px-2 py-1 rounded font-bold">
+              COMPLETED
+            </span>
+          )}
+        </div>
+
+        {/* 呼び出しボタン */}
+        <button
+          onClick={handleToggleRequest}
+          className={`px-4 py-2 rounded-lg font-bold shadow-sm transition flex items-center gap-2 text-sm ${
+            isRequesting 
+              ? "bg-red-50 text-red-600 border border-red-200 hover:bg-red-100"
+              : "bg-yellow-400 text-yellow-900 hover:bg-yellow-300"
+          }`}
+        >
+          {isRequesting ? (
+            <>✋ キャンセル</>
+          ) : (
+            <>🙋 講師を呼ぶ</>
+          )}
+        </button>
       </div>
 
       <div className="p-6">

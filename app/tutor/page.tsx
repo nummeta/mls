@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from "react";
 import { createClient } from "@/utils/supabase/client";
 
-// (型定義などはそのまま)
+// --- 型定義 ---
 type HelpRequest = {
   id: string;
   student_id: string;
@@ -16,7 +16,10 @@ type StudentStatus = {
   id: string;
   email: string;
   current_unit_id: string;
-  last_seen_at: string;
+  current_activity: string; // 何をしているか (video, quiz...)
+  current_unit_started_at: string; // その単元の開始時刻
+  last_seen_at: string; // 最終生存確認
+  units?: { name: string }; // 結合された単元情報
 };
 
 export default function TutorDashboard() {
@@ -25,6 +28,8 @@ export default function TutorDashboard() {
   const [students, setStudents] = useState<StudentStatus[]>([]);
   const [myStatus, setMyStatus] = useState("offline");
   
+  // 画面の時間を進めるためのカウンタ (10秒ごとに更新)
+  const [tick, setTick] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
@@ -32,7 +37,7 @@ export default function TutorDashboard() {
     fetchStudents();
     audioRef.current = new Audio("/alert.mp3");
 
-    // 自分の初期ステータスを取得して反映
+    // 自分の初期ステータス
     const fetchMyStatus = async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
@@ -42,29 +47,29 @@ export default function TutorDashboard() {
     };
     fetchMyStatus();
 
+    // --- リアルタイム監視 ---
+
+    // 1. リクエスト監視
     const channelRequests = supabase
-      .channel("help_requests_monitor")
+      .channel("tutor_dashboard_requests")
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "public", table: "help_requests" },
-        (payload: any) => {
-          const newReq = payload.new as HelpRequest;
-          setRequests((prev) => [...prev, newReq]);
-          playSound();
-          alert("生徒から質問リクエストが届きました！");
-        }
-      )
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "help_requests" },
-        (payload: any) => {
+        { event: "*", schema: "public", table: "help_requests" },
+        (payload) => {
+          // INSERT(新規)時のみ音を鳴らす
+          if (payload.eventType === 'INSERT') {
+            playSound();
+            alert("🔔 生徒から質問リクエストが届きました！");
+          }
+          // ステータス変更(生徒がキャンセルした場合など)もあるので常に最新を取得
           fetchRequests();
         }
       )
       .subscribe();
 
+    // 2. 生徒の学習状況監視
     const channelProfiles = supabase
-      .channel("profiles_monitor")
+      .channel("tutor_dashboard_profiles")
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "profiles" },
@@ -74,13 +79,18 @@ export default function TutorDashboard() {
       )
       .subscribe();
 
+    // 3. 経過時間表示用のタイマー (10秒ごとに再レンダリング)
+    const timer = setInterval(() => setTick(t => t + 1), 10000);
+
     return () => {
       supabase.removeChannel(channelRequests);
       supabase.removeChannel(channelProfiles);
+      clearInterval(timer);
     };
   }, []);
 
   const fetchRequests = async () => {
+    // pending (未解決) のみ取得
     const { data } = await supabase
       .from("help_requests")
       .select("*, profiles(email)")
@@ -91,39 +101,90 @@ export default function TutorDashboard() {
   };
 
   const fetchStudents = async () => {
+    // 生徒一覧 + 現在の単元名を取得
     const { data } = await supabase
       .from("profiles")
-      .select("*")
-      .eq("role", "student");
+      .select(`
+        *,
+        units ( name )
+      `)
+      .eq("role", "student")
+      .order("last_seen_at", { ascending: false }); // 最近アクセスした順
+    
     if (data) setStudents(data as any);
   };
 
   const playSound = () => {
     if (audioRef.current) {
-      audioRef.current.play().catch(e => console.log("音声再生ブロック: クリックが必要です"));
+      audioRef.current.play().catch(() => {});
     }
   };
 
   const toggleStatus = async (status: "available" | "busy" | "offline") => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
-
-    // 即時反映
     setMyStatus(status);
     await supabase.from("profiles").update({ tutor_status: status }).eq("id", user.id);
   };
 
-  const handleAccept = async (reqId: string) => {
-    const meetUrl = prompt("ビデオ通話のURLを入力してください", "https://meet.google.com/xxx-xxxx-xxx");
-    if (!meetUrl) return;
+  // ★修正: ビデオ通話URL入力などは廃止し、完了ステータスに変更するだけにする
+  const handleResolve = async (reqId: string) => {
+    if (!confirm("このリクエストを「対応済み」にしますか？")) return;
 
     await supabase
       .from("help_requests")
-      .update({ status: "talking", meet_url: meetUrl })
+      .update({ status: "resolved" })
       .eq("id", reqId);
+    
+    // fetchRequestsはリアルタイムリスナー経由または次回更新で反映されますが、念のため即時呼ぶ
+    fetchRequests();
+  };
 
-    toggleStatus("busy");
-    window.open(meetUrl, "_blank");
+  // --- ヘルパー関数: 経過時間の計算 ---
+  const getDuration = (startedAt: string) => {
+    if (!startedAt) return "-";
+    const start = new Date(startedAt).getTime();
+    const now = new Date().getTime();
+    const diffMins = Math.floor((now - start) / 60000); // 分換算
+    
+    if (diffMins < 0) return "0分";
+    if (diffMins < 60) return `${diffMins}分`;
+    const hours = Math.floor(diffMins / 60);
+    const mins = diffMins % 60;
+    return `${hours}時間${mins}分`;
+  };
+
+  // --- ヘルパー関数: 生徒の状態判定 ---
+  const getStudentState = (student: StudentStatus) => {
+    if (!student.last_seen_at) return { status: 'offline', text: '未アクセス' };
+
+    const lastSeen = new Date(student.last_seen_at).getTime();
+    const now = new Date().getTime();
+    const diffMinutes = (now - lastSeen) / 1000 / 60;
+
+    // 2分以上更新（ハートビート）がなければオフラインとみなす
+    if (diffMinutes > 2) {
+      return { 
+        status: 'offline', 
+        text: `オフライン (${Math.floor(diffMinutes)}分前)`,
+        bgClass: "opacity-50 bg-gray-50"
+      };
+    }
+
+    // オンラインの場合、activityの内容で表示を変える
+    let activityText = "学習中";
+    if (student.current_activity === 'video') activityText = "📺 動画視聴中";
+    else if (student.current_activity === 'quiz') activityText = "✍️ クイズ回答中";
+    else if (student.current_activity === 'intro') activityText = "📖 導入確認中";
+    else if (student.current_activity === 'outro') activityText = "🎉 完了画面";
+
+    return { 
+      status: 'online', 
+      text: activityText, 
+      unitName: student.units?.name || "不明な単元",
+      duration: getDuration(student.current_unit_started_at),
+      bgClass: "bg-green-50/30"
+    };
   };
 
   return (
@@ -134,7 +195,6 @@ export default function TutorDashboard() {
         <div className="bg-white p-6 rounded-xl shadow-sm flex justify-between items-center">
           <h1 className="text-2xl font-bold text-gray-800">👨‍🏫 講師ダッシュボード</h1>
           
-          {/* ★修正: ボタンのデザインを見やすく変更 */}
           <div className="flex gap-2 bg-gray-100 p-1 rounded-full">
             <button 
               onClick={() => toggleStatus("available")}
@@ -144,7 +204,7 @@ export default function TutorDashboard() {
                   : 'text-gray-500 hover:text-gray-800 hover:bg-gray-200'
               }`}
             >
-              待機中 (Available)
+              待機中
             </button>
             <button 
               onClick={() => toggleStatus("busy")}
@@ -154,7 +214,7 @@ export default function TutorDashboard() {
                   : 'text-gray-500 hover:text-gray-800 hover:bg-gray-200'
               }`}
             >
-              対応中 (Busy)
+              対応中
             </button>
           </div>
         </div>
@@ -174,11 +234,12 @@ export default function TutorDashboard() {
                     <p className="font-bold text-lg">{req.profiles?.email || "不明な生徒"}</p>
                     <p className="text-sm text-gray-500">{new Date(req.created_at).toLocaleTimeString()} - 呼び出し</p>
                   </div>
+                  {/* シンプルな完了ボタンに変更 */}
                   <button 
-                    onClick={() => handleAccept(req.id)}
+                    onClick={() => handleResolve(req.id)}
                     className="bg-blue-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-blue-700 shadow"
                   >
-                    📞 通話を開始する
+                    ✅ 対応完了にする
                   </button>
                 </div>
               ))}
@@ -186,35 +247,51 @@ export default function TutorDashboard() {
           )}
         </div>
 
-        {/* 📚 生徒の学習状況一覧 */}
+        {/* 📚 学習中の生徒一覧 (詳細版) */}
         <div className="bg-white p-6 rounded-xl shadow-sm">
-          <h2 className="text-xl font-bold text-gray-800 mb-4">📚 学習中の生徒</h2>
+          <h2 className="text-xl font-bold text-gray-800 mb-4">📚 生徒の状況 (リアルタイム)</h2>
           <table className="w-full">
             <thead className="bg-gray-50">
               <tr>
                 <th className="text-left p-3 text-gray-500 font-bold">生徒名</th>
-                <th className="text-left p-3 text-gray-500 font-bold">現在のステータス</th>
-                <th className="text-left p-3 text-gray-500 font-bold">最終アクティブ</th>
+                <th className="text-left p-3 text-gray-500 font-bold">状態</th>
+                <th className="text-left p-3 text-gray-500 font-bold">学習中の内容</th>
+                <th className="text-left p-3 text-gray-500 font-bold">経過時間</th>
+                <th className="text-left p-3 text-gray-500 font-bold">最終更新</th>
               </tr>
             </thead>
-            <tbody>
-              {students.map(student => (
-                <tr key={student.id} className="border-b last:border-0">
-                  <td className="p-3 font-medium text-gray-900">{student.email}</td>
-                  <td className="p-3">
-                    {student.current_unit_id ? (
-                      <span className="text-green-600 bg-green-50 px-2 py-1 rounded text-xs font-bold">学習中</span>
-                    ) : (
-                      <span className="text-gray-400 bg-gray-100 px-2 py-1 rounded text-xs">オフライン</span>
-                    )}
-                  </td>
-                  <td className="p-3 text-sm text-gray-500">
-                    {new Date(student.last_seen_at).toLocaleString()}
-                  </td>
-                </tr>
-              ))}
+            <tbody className="divide-y">
+              {students.map(student => {
+                const state = getStudentState(student);
+                const isOnline = state.status === 'online';
+
+                return (
+                  <tr key={student.id} className={state.bgClass}>
+                    <td className="p-3 font-medium text-gray-900">
+                      {student.email}
+                      {isOnline && <span className="ml-2 w-2 h-2 inline-block bg-green-500 rounded-full animate-pulse"></span>}
+                    </td>
+                    <td className="p-3">
+                      <span className={`px-2 py-1 rounded text-xs font-bold ${
+                        isOnline ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'
+                      }`}>
+                        {state.text}
+                      </span>
+                    </td>
+                    <td className="p-3 text-sm text-gray-700">
+                      {isOnline ? state.unitName : "-"}
+                    </td>
+                    <td className="p-3 text-sm font-mono text-gray-700">
+                      {isOnline ? state.duration : "-"}
+                    </td>
+                    <td className="p-3 text-sm text-gray-500">
+                      {new Date(student.last_seen_at).toLocaleTimeString()}
+                    </td>
+                  </tr>
+                );
+              })}
               {students.length === 0 && (
-                <tr><td colSpan={3} className="p-4 text-center text-gray-400">生徒データが見つかりません</td></tr>
+                <tr><td colSpan={5} className="p-4 text-center text-gray-400">生徒データが見つかりません</td></tr>
               )}
             </tbody>
           </table>

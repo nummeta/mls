@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { startSession, saveTestResult } from "./actions";
+import { createClient } from "@/utils/supabase/client";
 
 type Unit = {
   id: string;
@@ -34,10 +35,10 @@ export default function PaperTestClient({
   userId: string; 
   score: Score | null;
 }) {
+  const supabase = createClient();
   const maxScore = unit.max_score || 100;
   
-  // ステータス管理: 'intro' | 'testing' | 'grading' | 'completed'
-  // 完了済みなら最初から 'completed' にする
+  // ステータス管理
   const [status, setStatus] = useState<'intro' | 'testing' | 'grading' | 'completed'>(
     (!!score?.is_completed || (score?.raw_score !== undefined && score?.raw_score !== null)) 
       ? 'completed' 
@@ -45,11 +46,86 @@ export default function PaperTestClient({
   );
 
   const [startTime, setStartTime] = useState<number>(0);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0); // 画面表示用タイマー
+  const [elapsedSeconds, setElapsedSeconds] = useState(0); 
   const [displayScore, setDisplayScore] = useState<number>(score?.raw_score || 0);
   const [inputScore, setInputScore] = useState<string>("");
+  const [isRequesting, setIsRequesting] = useState(false);
 
-  // タイマー機能
+  // --- 1. 講師呼び出し・リクエスト機能 (LessonClientと同様) ---
+  useEffect(() => {
+    const checkRequest = async () => {
+      const { data } = await supabase
+        .from("help_requests")
+        .select("id")
+        .eq("student_id", userId)
+        .eq("status", "pending")
+        .limit(1);
+      
+        setIsRequesting(!!data && data.length > 0);
+    };
+    checkRequest();
+    
+    const channel = supabase.channel("test_request_status")
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'help_requests', filter: `student_id=eq.${userId}` }, 
+        () => checkRequest()
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [userId]);
+
+  const handleToggleRequest = async () => {
+    if (isRequesting) {
+      await supabase.from("help_requests").update({ status: 'resolved' }).eq("student_id", userId).eq("status", "pending");
+      setIsRequesting(false);
+      alert("リクエストを取り下げました");
+    } else {
+      await supabase.from("help_requests").insert({ student_id: userId, status: "pending" });
+      setIsRequesting(true);
+      alert("講師を呼び出しました。");
+    }
+  };
+
+  // --- 2. プロフィール更新ロジック (ここが重要！) ---
+  
+  // A. 初期化（ページを開いた時）
+  useEffect(() => {
+    const initProfile = async () => {
+      if (!unit.id) return;
+      await supabase.from("profiles").update({
+        current_unit_id: unit.id,
+        current_unit_started_at: new Date().toISOString(),
+        current_activity: 'test_intro', // 最初は説明画面
+        last_seen_at: new Date().toISOString(),
+      }).eq("id", userId);
+    };
+    initProfile();
+  }, [unit.id, userId]);
+
+  // B. ステータス変更時の更新 & ハートビート
+  useEffect(() => {
+    const updateStatus = async () => {
+      // 講師側に表示するアクティビティ名をわかりやすく変換
+      let activityName = 'test_intro';
+      if (status === 'testing') activityName = 'test_solving'; // 解答中
+      if (status === 'grading') activityName = 'test_grading'; // 採点中
+      if (status === 'completed') activityName = 'test_done';  // 完了
+
+      await supabase.from("profiles").update({
+        current_unit_id: unit.id,
+        current_activity: activityName,
+        last_seen_at: new Date().toISOString(),
+      }).eq("id", userId);
+    };
+
+    updateStatus(); // ステータスが変わったら即送信
+
+    // テスト中は画面を見つめている時間が長いので、定期的に生存報告を送る
+    const interval = setInterval(updateStatus, 30000); 
+    return () => clearInterval(interval);
+  }, [status, unit.id, userId]);
+
+
+  // --- 3. タイマー機能 ---
   useEffect(() => {
     let interval: NodeJS.Timeout;
     if (status === 'testing') {
@@ -60,7 +136,8 @@ export default function PaperTestClient({
     return () => clearInterval(interval);
   }, [status, startTime]);
 
-  // 1. テスト開始
+  // --- アクション ---
+
   const handleStart = async () => {
     try {
       await startSession(unit.id, userId);
@@ -74,13 +151,11 @@ export default function PaperTestClient({
     }
   };
 
-  // 2. テスト終了（採点モードへ移行）
   const handleStopTest = () => {
     if(!confirm("テストを終了して答え合わせに進みますか？")) return;
     setStatus('grading');
   };
 
-  // 3. 点数登録
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const scoreVal = parseInt(inputScore, 10);
@@ -92,12 +167,6 @@ export default function PaperTestClient({
 
     if (!confirm(`${scoreVal}点で登録してよろしいですか？`)) return;
 
-    // 実際の経過時間 (startTimeが基準)
-    // ※ grading中に時間が進まないように、testing終了時点の時間を保持しても良いですが、
-    // ここでは簡易的に「開始〜採点完了」までの時間を記録するか、
-    // あるいは handleStopTest で時間を止めるロジックにするのが正確です。
-    // 今回は「タイマーが止まった時点の時間」＝ elapsedSeconds を使用します。
-    
     try {
       await saveTestResult(unit.id, userId, scoreVal, elapsedSeconds);
       setDisplayScore(scoreVal);
@@ -108,7 +177,6 @@ export default function PaperTestClient({
     }
   };
 
-  // 再挑戦
   const handleRetry = () => {
     setStatus('intro');
     setInputScore("");
@@ -116,17 +184,28 @@ export default function PaperTestClient({
   };
 
   return (
-    <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+    <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden relative">
       
-      <div className="p-6 border-b border-gray-100 flex justify-between items-center">
+      {/* 講師呼び出しボタン (右上) */}
+      <div className="absolute top-4 right-4 z-10">
+        <button
+          onClick={handleToggleRequest}
+          className={`px-4 py-2 rounded-full font-bold shadow-sm text-sm transition ${
+            isRequesting 
+              ? "bg-red-100 text-red-600 border border-red-300 hover:bg-red-200"
+              : "bg-yellow-100 text-yellow-800 border border-yellow-300 hover:bg-yellow-200"
+          }`}
+        >
+          {isRequesting ? "✋ 呼び出し中 (キャンセル)" : "🙋 講師を呼ぶ"}
+        </button>
+      </div>
+
+      <div className="p-6 border-b border-gray-100 flex justify-between items-center pr-40"> {/* pr-40でボタンと被らないように */}
         <h1 className="text-2xl font-extrabold text-gray-900">{unit.name}</h1>
         {status === 'completed' && (
           <div className="text-right">
             <span className="bg-green-100 text-green-700 text-xs px-2 py-1 rounded font-bold block mb-1">
               COMPLETED
-            </span>
-            <span className="text-xs text-gray-500 font-bold">
-              前回: {score?.raw_score} / {maxScore}
             </span>
           </div>
         )}
@@ -151,12 +230,11 @@ export default function PaperTestClient({
           </div>
         )}
 
-        {/* State 2: Testing (試験中・タイマーのみ表示) */}
+        {/* State 2: Testing (試験中) */}
         {status === 'testing' && (
           <div className="text-center py-16 space-y-8 animate-fade-in">
             <h2 className="text-lg font-bold text-gray-500">試験中...</h2>
             
-            {/* タイマー表示 */}
             <div className="text-7xl font-mono font-bold text-blue-600 tabular-nums">
               {formatTime(elapsedSeconds)}
             </div>
@@ -175,17 +253,15 @@ export default function PaperTestClient({
           </div>
         )}
 
-        {/* State 3: Grading (採点中・PDF表示 & 入力) */}
+        {/* State 3: Grading (採点中) */}
         {status === 'grading' && (
           <div className="space-y-8 animate-fade-in">
             
-            {/* 結果入力フォーム (先に目に入るように上部または下部へ。今回はPDFを見ながらなので下部推奨だが、スクロール考慮して上にも案内) */}
             <div className="bg-blue-50 p-4 rounded-lg border border-blue-100 flex justify-between items-center">
                <span className="font-bold text-blue-900">⏱️ 所要時間: {formatTime(elapsedSeconds)}</span>
                <span className="text-sm text-blue-700">解説を見て自己採点してください</span>
             </div>
 
-            {/* PDFエリア */}
             {unit.answer_url ? (
               <div className="bg-gray-100 rounded-xl p-4 h-[60vh] border border-gray-200">
                 <iframe 
@@ -200,7 +276,6 @@ export default function PaperTestClient({
               </div>
             )}
 
-            {/* 点数入力エリア */}
             <div className="bg-white p-6 rounded-xl border-2 border-blue-100 text-center shadow-lg">
               <h3 className="font-bold text-lg text-gray-800 mb-2">採点結果を入力</h3>
               <p className="text-sm text-gray-500 mb-6">
@@ -234,7 +309,7 @@ export default function PaperTestClient({
           </div>
         )}
 
-        {/* State 4: Completed (完了画面) */}
+        {/* State 4: Completed (完了) */}
         {status === 'completed' && (
           <div className="text-center py-10 space-y-6 animate-fade-in">
             <div className="text-6xl mb-4">
