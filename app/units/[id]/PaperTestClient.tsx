@@ -1,8 +1,12 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { startSession, saveTestResult } from "./actions";
 import { createClient } from "@/utils/supabase/client";
+// ★追加: レポート機能で作ったURL発行アクションをインポート
+import { createUploadUrl } from "../../report/actions"; 
+// ★追加: QRコード表示用ライブラリ
+import { QRCodeSVG } from "qrcode.react";
 
 type Unit = {
   id: string;
@@ -51,7 +55,10 @@ export default function PaperTestClient({
   const [inputScore, setInputScore] = useState<string>("");
   const [isRequesting, setIsRequesting] = useState(false);
 
-  // --- 1. 講師呼び出し・リクエスト機能 (LessonClientと同様) ---
+  // ★追加: アップロード用QRのURL状態管理
+  const [uploadUrl, setUploadUrl] = useState<string | null>(null);
+
+  // --- 1. 講師呼び出し・リクエスト機能 ---
   useEffect(() => {
     const checkRequest = async () => {
       const { data } = await supabase
@@ -85,9 +92,7 @@ export default function PaperTestClient({
     }
   };
 
-  // --- 2. プロフィール更新ロジック (ここが重要！) ---
-  
-  // A. 初期化（ページを開いた時）
+  // --- 2. プロフィール更新ロジック ---
   useEffect(() => {
     const initProfile = async () => {
       if (!unit.id) return;
@@ -101,10 +106,8 @@ export default function PaperTestClient({
     initProfile();
   }, [unit.id, userId]);
 
-  // B. ステータス変更時の更新 & ハートビート
   useEffect(() => {
     const updateStatus = async () => {
-      // 講師側に表示するアクティビティ名をわかりやすく変換
       let activityName = 'test_intro';
       if (status === 'testing') activityName = 'test_solving'; // 解答中
       if (status === 'grading') activityName = 'test_grading'; // 採点中
@@ -117,13 +120,10 @@ export default function PaperTestClient({
       }).eq("id", userId);
     };
 
-    updateStatus(); // ステータスが変わったら即送信
-
-    // テスト中は画面を見つめている時間が長いので、定期的に生存報告を送る
+    updateStatus(); 
     const interval = setInterval(updateStatus, 30000); 
     return () => clearInterval(interval);
   }, [status, unit.id, userId]);
-
 
   // --- 3. タイマー機能 ---
   useEffect(() => {
@@ -135,6 +135,22 @@ export default function PaperTestClient({
     }
     return () => clearInterval(interval);
   }, [status, startTime]);
+
+  // --- 4. ★追加: QRコードの自動発行 (採点モードになったら) ---
+  useEffect(() => {
+    if (status === 'grading' && !uploadUrl) {
+      const fetchUrl = async () => {
+        try {
+          // 生徒IDを使ってアップロード用URLを発行
+          const url = await createUploadUrl(userId);
+          setUploadUrl(url);
+        } catch (e) {
+          console.error("QR発行エラー", e);
+        }
+      };
+      fetchUrl();
+    }
+  }, [status, uploadUrl, userId]);
 
   // --- アクション ---
 
@@ -181,10 +197,11 @@ export default function PaperTestClient({
     setStatus('intro');
     setInputScore("");
     setElapsedSeconds(0);
+    setUploadUrl(null); // ★リセット
   };
 
   return (
-    <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden relative">
+    <div className="max-w-6xl mx-auto bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden relative">
       
       {/* 講師呼び出しボタン (右上) */}
       <div className="absolute top-4 right-4 z-10">
@@ -200,7 +217,7 @@ export default function PaperTestClient({
         </button>
       </div>
 
-      <div className="p-6 border-b border-gray-100 flex justify-between items-center pr-40"> {/* pr-40でボタンと被らないように */}
+      <div className="p-6 border-b border-gray-100 flex justify-between items-center pr-40"> 
         <h1 className="text-2xl font-extrabold text-gray-900">{unit.name}</h1>
         {status === 'completed' && (
           <div className="text-right">
@@ -253,7 +270,7 @@ export default function PaperTestClient({
           </div>
         )}
 
-        {/* State 3: Grading (採点中) */}
+        {/* State 3: Grading (採点中 - レイアウト変更) */}
         {status === 'grading' && (
           <div className="space-y-8 animate-fade-in">
             
@@ -262,49 +279,85 @@ export default function PaperTestClient({
                <span className="text-sm text-blue-700">解説を見て自己採点してください</span>
             </div>
 
-            {unit.answer_url ? (
-              <div className="bg-gray-100 rounded-xl p-4 h-[60vh] border border-gray-200">
-                <iframe 
-                  src={unit.answer_url} 
-                  className="w-full h-full rounded bg-white shadow-sm"
-                  title="Answer PDF"
-                />
-              </div>
-            ) : (
-              <div className="p-10 text-center bg-gray-100 rounded text-gray-500">
-                解答PDFが見つかりません
-              </div>
-            )}
-
-            <div className="bg-white p-6 rounded-xl border-2 border-blue-100 text-center shadow-lg">
-              <h3 className="font-bold text-lg text-gray-800 mb-2">採点結果を入力</h3>
-              <p className="text-sm text-gray-500 mb-6">
-                満点: {maxScore}点
-              </p>
+            {/* ★変更: 2カラムレイアウト (左:PDF / 右:QR&入力) */}
+            <div className="flex flex-col lg:flex-row gap-6">
               
-              <form onSubmit={handleSubmit} className="flex flex-col items-center gap-4">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    min="0"
-                    max={maxScore}
-                    value={inputScore}
-                    onChange={(e) => setInputScore(e.target.value)}
-                    placeholder="0"
-                    className="w-32 text-center text-3xl font-bold p-3 rounded-lg border-2 border-blue-200 focus:border-blue-500 outline-none"
-                    required
-                    autoFocus
-                  />
-                  <span className="text-2xl font-bold text-blue-800">/ {maxScore}</span>
-                </div>
+              {/* 左カラム: 解説PDF */}
+              <div className="flex-1">
+                {unit.answer_url ? (
+                  <div className="bg-gray-100 rounded-xl p-4 h-[70vh] border border-gray-200">
+                    <iframe 
+                      src={unit.answer_url} 
+                      className="w-full h-full rounded bg-white shadow-sm"
+                      title="Answer PDF"
+                    />
+                  </div>
+                ) : (
+                  <div className="p-10 text-center bg-gray-100 rounded text-gray-500 h-[300px] flex items-center justify-center">
+                    解答PDFが見つかりません
+                  </div>
+                )}
+              </div>
+
+              {/* 右カラム: サイドバー */}
+              <div className="w-full lg:w-80 space-y-6">
                 
-                <button 
-                  type="submit"
-                  className="bg-blue-600 text-white px-8 py-3 rounded-full font-bold hover:bg-blue-700 transition shadow-sm w-full md:w-auto"
-                >
-                  結果を登録して完了
-                </button>
-              </form>
+                {/* 1. 答案アップロードQR */}
+                <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm text-center">
+                  <h3 className="font-bold text-gray-800 mb-2 flex items-center justify-center gap-2">
+                    <span>📸</span> 答案を提出
+                  </h3>
+                  <p className="text-xs text-gray-500 mb-4">
+                    スマホで読み取って<br/>答案の写真をアップロードしてください
+                  </p>
+                  
+                  <div className="bg-white p-2 rounded inline-block border border-gray-100">
+                    {uploadUrl ? (
+                      <QRCodeSVG value={uploadUrl} size={140} />
+                    ) : (
+                      <div className="w-[140px] h-[140px] bg-gray-100 animate-pulse rounded flex items-center justify-center text-xs text-gray-400">
+                        発行中...
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-gray-400 mt-2">
+                    ※ログイン不要で送信できます
+                  </p>
+                </div>
+
+                {/* 2. 点数入力エリア */}
+                <div className="bg-white p-6 rounded-xl border-2 border-blue-100 text-center shadow-lg">
+                  <h3 className="font-bold text-lg text-gray-800 mb-2">採点結果を入力</h3>
+                  <p className="text-sm text-gray-500 mb-6">
+                    満点: {maxScore}点
+                  </p>
+                  
+                  <form onSubmit={handleSubmit} className="flex flex-col items-center gap-4">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min="0"
+                        max={maxScore}
+                        value={inputScore}
+                        onChange={(e) => setInputScore(e.target.value)}
+                        placeholder="0"
+                        className="w-24 text-center text-3xl font-bold p-3 rounded-lg border-2 border-blue-200 focus:border-blue-500 outline-none"
+                        required
+                        autoFocus
+                      />
+                      <span className="text-xl font-bold text-blue-800">/ {maxScore}</span>
+                    </div>
+                    
+                    <button 
+                      type="submit"
+                      className="bg-blue-600 text-white px-6 py-3 rounded-full font-bold hover:bg-blue-700 transition shadow-sm w-full"
+                    >
+                      結果を登録して完了
+                    </button>
+                  </form>
+                </div>
+
+              </div>
             </div>
           </div>
         )}

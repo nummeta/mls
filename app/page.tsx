@@ -79,6 +79,33 @@ export default async function Home() {
       {/* --- メインコンテンツ --- */}
       <main className="max-w-6xl mx-auto px-6 py-8">
         
+        <div className="mb-10">
+          <Link href="/study-room" className="group block">
+            <div className="bg-gradient-to-r from-indigo-600 to-blue-500 rounded-2xl p-6 md:p-8 text-white shadow-lg hover:shadow-2xl hover:-translate-y-1 transition-all duration-300 relative overflow-hidden">
+              {/* 背景装飾 */}
+              <div className="absolute top-0 right-0 w-64 h-64 bg-white opacity-10 rounded-full blur-3xl -mr-16 -mt-16"></div>
+              
+              <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-6">
+                <div className="text-center md:text-left">
+                  <h2 className="text-2xl font-bold mb-2 flex items-center justify-center md:justify-start gap-2">
+                    <span className="text-3xl">🎥</span> オンライン自習室
+                  </h2>
+                  <p className="text-blue-100 font-medium">
+                    カメラをONにして、みんなと一緒に集中しよう。
+                    <br className="hidden md:block"/>
+                    講師が見回りをしています。
+                  </p>
+                </div>
+                <div className="flex-shrink-0">
+                  <span className="bg-white text-indigo-600 px-6 py-3 rounded-full font-bold shadow-md group-hover:bg-blue-50 transition-colors">
+                    入室する &rarr;
+                  </span>
+                </div>
+              </div>
+            </div>
+          </Link>
+        </div>
+        
         {/* セクションタイトル */}
         <div className="flex items-center gap-3 mb-6">
           <div className="w-1.5 h-6 bg-[#E60033] rounded-full"></div>

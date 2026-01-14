@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zoom Component</title>
+
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+    <script src="/zoom-sdk.js"></script>
+
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: black;
+            /* 背景は黒 */
+        }
+
+        /* ★ここが修正ポイント */
+        #meetingSDKElement {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: calc(100% - 80px) !important;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="meetingSDKElement"></div>
+
+    <script>
+        function getParams() {
+            const params = new URLSearchParams(window.location.search);
+            return {
+                mn: params.get('mn'),
+                pwd: params.get('pwd'),
+                name: params.get('name'),
+                sig: params.get('sig'),
+                key: params.get('key')
+            };
+        }
+
+        async function startZoom() {
+            const { mn, pwd, name, sig, key } = getParams();
+
+            if (!mn || !sig || !key) {
+                console.error('パラメータ不足');
+                return;
+            }
+
+            const client = ZoomMtgEmbedded.createClient();
+            const element = document.getElementById('meetingSDKElement');
+
+            try {
+                await client.init({
+                    zoomAppRoot: element,
+                    language: 'ja-JP',
+                    customize: {
+                        video: {
+                            isResizable: true,
+                            viewSizes: {
+                                default: { width: element.clientWidth, height: element.clientHeight }
+                            }
+                        }
+                    }
+                });
+
+                await client.join({
+                    sdkKey: key,
+                    signature: sig,
+                    meetingNumber: mn,
+                    password: pwd,
+                    userName: name,
+                });
+
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        window.addEventListener('DOMContentLoaded', startZoom);
+    </script>
+</body>
+
+</html>
