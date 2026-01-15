@@ -197,10 +197,40 @@ export default function InstructorDashboard() {
                 console.log("Tickets channel status:", status);
             });
 
+        // ★リアルタイム監視: 生徒プロファイル（学習状況更新）
+        const channelProfiles = supabase
+            .channel("instructor_profiles")
+            .on("postgres_changes",
+                { event: "UPDATE", schema: "public", table: "profiles" },
+                (payload) => {
+                    console.log("📡 profiles changed:", payload.eventType);
+                    fetchStudents();
+                }
+            )
+            .subscribe((status) => {
+                console.log("Profiles channel status:", status);
+            });
+
+        // ★リアルタイム監視: 学習セッション（履歴更新）
+        const channelUnitSessions = supabase
+            .channel("instructor_unit_sessions")
+            .on("postgres_changes",
+                { event: "*", schema: "public", table: "sessions" },
+                (payload) => {
+                    console.log("📡 sessions changed:", payload.eventType);
+                    fetchTodayHistory();
+                }
+            )
+            .subscribe((status) => {
+                console.log("Unit sessions channel status:", status);
+            });
+
         // 10秒ごとにデータを再取得（バックアップ）
         const timer = setInterval(() => {
             setTick(t => t + 1);
-            fetchSessions(); // 定期的にリフレッシュ
+            fetchSessions();
+            fetchStudents();
+            fetchTodayHistory();
             fetchSupportTickets();
         }, 10000);
 
@@ -210,6 +240,8 @@ export default function InstructorDashboard() {
             supabase.removeChannel(channelPlans);
             supabase.removeChannel(channelHelp);
             supabase.removeChannel(channelTickets);
+            supabase.removeChannel(channelProfiles);
+            supabase.removeChannel(channelUnitSessions);
             clearInterval(timer);
         };
     }, []);
@@ -304,19 +336,26 @@ export default function InstructorDashboard() {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
-        // 今日のセッション取得
-        const { data: todaySessions } = await supabase
+        console.log("📚 Fetching today's history since:", today.toISOString());
+
+        // 今日のセッション取得（duration_secondsは存在しない可能性があるのでstart/endで計算）
+        const { data: todaySessions, error } = await supabase
             .from("sessions")
             .select(`
                 id,
                 unit_id,
                 user_id,
-                duration_seconds,
+                start_time,
+                end_time,
                 created_at,
+                is_completed,
                 units ( name, type, max_score )
             `)
             .gte("created_at", today.toISOString())
             .order("created_at", { ascending: true });
+
+        console.log("📚 Today's sessions:", todaySessions?.length, "Error:", error);
+        if (todaySessions) console.log("📚 Sessions data:", todaySessions);
 
         if (!todaySessions) return;
 
@@ -348,12 +387,20 @@ export default function InstructorDashboard() {
             // テストスコア
             const testScore = unitScores?.find(s => s.unit_id === session.unit_id && s.user_id === studentId);
 
+            // 時間計算（start_timeとend_timeから）
+            let durationSeconds: number | null = null;
+            if ((session as any).start_time && (session as any).end_time) {
+                const start = new Date((session as any).start_time).getTime();
+                const end = new Date((session as any).end_time).getTime();
+                durationSeconds = Math.floor((end - start) / 1000);
+            }
+
             const entry: TodaySession = {
                 id: session.id,
                 unit_id: session.unit_id,
                 unit_name: unit.name,
                 unit_type: unit.type === 'test' ? 'output' : 'input',
-                duration_seconds: session.duration_seconds,
+                duration_seconds: durationSeconds,
                 created_at: session.created_at || '',
                 quiz_correct: quizTotal > 0 ? quizCorrect : undefined,
                 quiz_total: quizTotal > 0 ? quizTotal : undefined,
