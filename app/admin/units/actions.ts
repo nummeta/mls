@@ -10,9 +10,11 @@ export async function createUnit(formData: FormData) {
   const name = formData.get("name") as string;
   const sectionId = formData.get("section_id") as string;
   const type = formData.get("type") as string;
-  const file = formData.get("file") as File;
+  const file = formData.get("file") as File; // 動画用
+  const questionFile = formData.get("question_file") as File; // ★問題PDF
+  const answerFile = formData.get("answer_file") as File; // ★解答PDF
   const sortOrder = parseInt(formData.get("sort_order") as string) || 10;
-  
+
   // ★3つのメッセージを取得
   const message = formData.get("message") as string;
   const intro = formData.get("intro") as string;
@@ -22,27 +24,40 @@ export async function createUnit(formData: FormData) {
 
   let videoUrl = null;
   let answerUrl = null;
+  let questionPdfUrl = null;
 
+  // 動画ファイル処理
   if (file && file.size > 0) {
     const fileExt = file.name.split(".").pop();
     const fileName = `${Date.now()}.${fileExt}`;
-    const bucketName = file.type.includes("pdf") ? "documents" : "videos";
-    
     const { error: uploadError } = await supabase.storage
-      .from(bucketName)
+      .from("videos")
       .upload(fileName, file);
+    if (uploadError) throw new Error("動画アップロード失敗: " + uploadError.message);
+    const { data: { publicUrl } } = supabase.storage.from("videos").getPublicUrl(fileName);
+    videoUrl = publicUrl;
+  }
 
-    if (uploadError) throw new Error("アップロード失敗: " + uploadError.message);
+  // ★問題PDF処理
+  if (questionFile && questionFile.size > 0) {
+    const fileName = `question_${Date.now()}.pdf`;
+    const { error: uploadError } = await supabase.storage
+      .from("documents")
+      .upload(fileName, questionFile);
+    if (uploadError) throw new Error("問題PDFアップロード失敗: " + uploadError.message);
+    const { data: { publicUrl } } = supabase.storage.from("documents").getPublicUrl(fileName);
+    questionPdfUrl = publicUrl;
+  }
 
-    const { data: { publicUrl } } = supabase.storage
-      .from(bucketName)
-      .getPublicUrl(fileName);
-
-    if (bucketName === "videos") {
-      videoUrl = publicUrl;
-    } else {
-      answerUrl = publicUrl;
-    }
+  // ★解答PDF処理
+  if (answerFile && answerFile.size > 0) {
+    const fileName = `answer_${Date.now()}.pdf`;
+    const { error: uploadError } = await supabase.storage
+      .from("documents")
+      .upload(fileName, answerFile);
+    if (uploadError) throw new Error("解答PDFアップロード失敗: " + uploadError.message);
+    const { data: { publicUrl } } = supabase.storage.from("documents").getPublicUrl(fileName);
+    answerUrl = publicUrl;
   }
 
   const { error } = await supabase.from("units").insert({
@@ -50,11 +65,12 @@ export async function createUnit(formData: FormData) {
     section_id: sectionId,
     type,
     sort_order: sortOrder,
-    message, // ★追加
-    intro,   // ★追加
-    outro,   // ★追加
+    message,
+    intro,
+    outro,
     video_url: videoUrl,
     answer_url: answerUrl,
+    question_pdf_url: questionPdfUrl, // ★追加
     max_score: type === "test" ? 100 : null,
   });
 
@@ -74,7 +90,9 @@ export async function updateUnit(formData: FormData) {
   const name = formData.get("name") as string;
   const type = formData.get("type") as string;
   const sortOrder = parseInt(formData.get("sort_order") as string) || 10;
-  const file = formData.get("file") as File;
+  const file = formData.get("file") as File; // 動画用
+  const questionFile = formData.get("question_file") as File; // ★問題PDF
+  const answerFile = formData.get("answer_file") as File; // ★解答PDF
 
   // ★3つのメッセージを取得
   const message = formData.get("message") as string;
@@ -87,34 +105,44 @@ export async function updateUnit(formData: FormData) {
     name,
     type,
     sort_order: sortOrder,
-    message, // ★追加
-    intro,   // ★追加
-    outro,   // ★追加
+    message,
+    intro,
+    outro,
     max_score: type === "test" ? 100 : null,
   };
 
+  // 動画ファイル処理
   if (file && file.size > 0) {
     const fileExt = file.name.split(".").pop();
     const fileName = `${Date.now()}.${fileExt}`;
-    const bucketName = file.type.includes("pdf") ? "documents" : "videos";
-
     const { error: uploadError } = await supabase.storage
-      .from(bucketName)
+      .from("videos")
       .upload(fileName, file);
+    if (uploadError) throw new Error("動画更新失敗: " + uploadError.message);
+    const { data: { publicUrl } } = supabase.storage.from("videos").getPublicUrl(fileName);
+    updates.video_url = publicUrl;
+  }
 
-    if (uploadError) throw new Error("ファイル更新失敗: " + uploadError.message);
+  // ★問題PDF処理
+  if (questionFile && questionFile.size > 0) {
+    const fileName = `question_${Date.now()}.pdf`;
+    const { error: uploadError } = await supabase.storage
+      .from("documents")
+      .upload(fileName, questionFile);
+    if (uploadError) throw new Error("問題PDF更新失敗: " + uploadError.message);
+    const { data: { publicUrl } } = supabase.storage.from("documents").getPublicUrl(fileName);
+    updates.question_pdf_url = publicUrl;
+  }
 
-    const { data: { publicUrl } } = supabase.storage
-      .from(bucketName)
-      .getPublicUrl(fileName);
-
-    if (bucketName === "videos") {
-      updates.video_url = publicUrl;
-      updates.answer_url = null;
-    } else {
-      updates.answer_url = publicUrl;
-      updates.video_url = null;
-    }
+  // ★解答PDF処理
+  if (answerFile && answerFile.size > 0) {
+    const fileName = `answer_${Date.now()}.pdf`;
+    const { error: uploadError } = await supabase.storage
+      .from("documents")
+      .upload(fileName, answerFile);
+    if (uploadError) throw new Error("解答PDF更新失敗: " + uploadError.message);
+    const { data: { publicUrl } } = supabase.storage.from("documents").getPublicUrl(fileName);
+    updates.answer_url = publicUrl;
   }
 
   const { error } = await supabase
