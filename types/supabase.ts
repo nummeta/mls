@@ -341,6 +341,7 @@ export type Database = {
           created_at: string | null
           id: string
           intro: string | null
+          is_dialogue_checkpoint: boolean | null
           message: string | null
           name: string
           outro: string | null
@@ -352,6 +353,7 @@ export type Database = {
           created_at?: string | null
           id?: string
           intro?: string | null
+          is_dialogue_checkpoint?: boolean | null
           message?: string | null
           name: string
           outro?: string | null
@@ -363,6 +365,7 @@ export type Database = {
           created_at?: string | null
           id?: string
           intro?: string | null
+          is_dialogue_checkpoint?: boolean | null
           message?: string | null
           name?: string
           outro?: string | null
@@ -376,6 +379,128 @@ export type Database = {
             columns: ["section_id"]
             isOneToOne: false
             referencedRelation: "sections"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      student_progress: {
+        Row: {
+          unit_id: string
+          student_id: string
+          status: string | null
+          dialogue_cleared: boolean | null
+          completed_at: string | null
+          created_at: string | null
+        }
+        Insert: {
+          unit_id: string
+          student_id: string
+          status?: string | null
+          dialogue_cleared?: boolean | null
+          completed_at?: string | null
+          created_at?: string | null
+        }
+        Update: {
+          unit_id?: string
+          student_id?: string
+          status?: string | null
+          dialogue_cleared?: boolean | null
+          completed_at?: string | null
+          created_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "student_progress_unit_id_fkey"
+            columns: ["unit_id"]
+            isOneToOne: false
+            referencedRelation: "units"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "student_progress_student_id_fkey"
+            columns: ["student_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      instructors: {
+        Row: {
+          id: string
+          assigned_room_name: string
+          status: string | null
+          created_at: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          id: string
+          assigned_room_name: string
+          status?: string | null
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          id?: string
+          assigned_room_name?: string
+          status?: string | null
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "instructors_id_fkey"
+            columns: ["id"]
+            isOneToOne: true
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      support_tickets: {
+        Row: {
+          id: string
+          student_id: string
+          instructor_id: string | null
+          unit_ids: unknown
+          status: string | null
+          created_at: string | null
+          assigned_at: string | null
+          completed_at: string | null
+        }
+        Insert: {
+          id?: string
+          student_id: string
+          instructor_id?: string | null
+          unit_ids?: unknown
+          status?: string | null
+          created_at?: string | null
+          assigned_at?: string | null
+          completed_at?: string | null
+        }
+        Update: {
+          id?: string
+          student_id?: string
+          instructor_id?: string | null
+          unit_ids?: unknown
+          status?: string | null
+          created_at?: string | null
+          assigned_at?: string | null
+          completed_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "support_tickets_student_id_fkey"
+            columns: ["student_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "support_tickets_instructor_id_fkey"
+            columns: ["instructor_id"]
+            isOneToOne: false
+            referencedRelation: "instructors"
             referencedColumns: ["id"]
           },
         ]

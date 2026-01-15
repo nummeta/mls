@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { startSession, saveTestResult } from "./actions";
 import { createClient } from "@/utils/supabase/client";
 // ★追加: レポート機能で作ったURL発行アクションをインポート
-import { createUploadUrl } from "../../report/actions"; 
+import { createUploadUrl } from "../../report/actions";
 // ★追加: QRコード表示用ライブラリ
 import { QRCodeSVG } from "qrcode.react";
 
@@ -12,6 +12,7 @@ type Unit = {
   id: string;
   name: string;
   answer_url: string | null;
+  question_pdf_url?: string | null; // ★追加: 問題PDF URL
   intro?: string;
   outro?: string;
   max_score?: number;
@@ -30,27 +31,27 @@ const formatTime = (seconds: number) => {
   return `${m}:${s}`;
 };
 
-export default function PaperTestClient({ 
-  unit, 
-  userId, 
-  score 
-}: { 
-  unit: Unit; 
-  userId: string; 
+export default function PaperTestClient({
+  unit,
+  userId,
+  score
+}: {
+  unit: Unit;
+  userId: string;
   score: Score | null;
 }) {
   const supabase = createClient();
   const maxScore = unit.max_score || 100;
-  
+
   // ステータス管理
   const [status, setStatus] = useState<'intro' | 'testing' | 'grading' | 'completed'>(
-    (!!score?.is_completed || (score?.raw_score !== undefined && score?.raw_score !== null)) 
-      ? 'completed' 
+    (!!score?.is_completed || (score?.raw_score !== undefined && score?.raw_score !== null))
+      ? 'completed'
       : 'intro'
   );
 
   const [startTime, setStartTime] = useState<number>(0);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0); 
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [displayScore, setDisplayScore] = useState<number>(score?.raw_score || 0);
   const [inputScore, setInputScore] = useState<string>("");
   const [isRequesting, setIsRequesting] = useState(false);
@@ -67,13 +68,13 @@ export default function PaperTestClient({
         .eq("student_id", userId)
         .eq("status", "pending")
         .limit(1);
-      
-        setIsRequesting(!!data && data.length > 0);
+
+      setIsRequesting(!!data && data.length > 0);
     };
     checkRequest();
-    
+
     const channel = supabase.channel("test_request_status")
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'help_requests', filter: `student_id=eq.${userId}` }, 
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'help_requests', filter: `student_id=eq.${userId}` },
         () => checkRequest()
       )
       .subscribe();
@@ -120,8 +121,8 @@ export default function PaperTestClient({
       }).eq("id", userId);
     };
 
-    updateStatus(); 
-    const interval = setInterval(updateStatus, 30000); 
+    updateStatus();
+    const interval = setInterval(updateStatus, 30000);
     return () => clearInterval(interval);
   }, [status, unit.id, userId]);
 
@@ -168,7 +169,7 @@ export default function PaperTestClient({
   };
 
   const handleStopTest = () => {
-    if(!confirm("テストを終了して答え合わせに進みますか？")) return;
+    if (!confirm("テストを終了して答え合わせに進みますか？")) return;
     setStatus('grading');
   };
 
@@ -202,22 +203,21 @@ export default function PaperTestClient({
 
   return (
     <div className="max-w-6xl mx-auto bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden relative">
-      
+
       {/* 講師呼び出しボタン (右上) */}
       <div className="absolute top-4 right-4 z-10">
         <button
           onClick={handleToggleRequest}
-          className={`px-4 py-2 rounded-full font-bold shadow-sm text-sm transition ${
-            isRequesting 
+          className={`px-4 py-2 rounded-full font-bold shadow-sm text-sm transition ${isRequesting
               ? "bg-red-100 text-red-600 border border-red-300 hover:bg-red-200"
               : "bg-yellow-100 text-yellow-800 border border-yellow-300 hover:bg-yellow-200"
-          }`}
+            }`}
         >
           {isRequesting ? "✋ 呼び出し中 (キャンセル)" : "🙋 講師を呼ぶ"}
         </button>
       </div>
 
-      <div className="p-6 border-b border-gray-100 flex justify-between items-center pr-40"> 
+      <div className="p-6 border-b border-gray-100 flex justify-between items-center pr-40">
         <h1 className="text-2xl font-extrabold text-gray-900">{unit.name}</h1>
         {status === 'completed' && (
           <div className="text-right">
@@ -229,7 +229,7 @@ export default function PaperTestClient({
       </div>
 
       <div className="p-6">
-        
+
         {/* State 1: Intro (開始前) */}
         {status === 'intro' && (
           <div className="text-center py-10 space-y-6">
@@ -238,7 +238,25 @@ export default function PaperTestClient({
             <p className="text-gray-600 max-w-lg mx-auto leading-relaxed whitespace-pre-wrap">
               {unit.intro || "準備ができたらスタートボタンを押してください。\nタイマーが作動します。"}
             </p>
-            <button 
+
+            {/* ★追加: 問題PDFリンク */}
+            {unit.question_pdf_url && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 max-w-md mx-auto">
+                <p className="text-sm text-amber-800 mb-2">
+                  📄 手元に問題用紙がなければこちらから印刷してください
+                </p>
+                <a
+                  href={unit.question_pdf_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 text-amber-700 font-bold hover:text-amber-900 transition underline"
+                >
+                  🖨️ 問題PDFを開く
+                </a>
+              </div>
+            )}
+
+            <button
               onClick={handleStart}
               className="bg-blue-600 text-white px-8 py-3 rounded-full font-bold shadow-lg hover:bg-blue-700 transition transform hover:-translate-y-0.5"
             >
@@ -251,17 +269,17 @@ export default function PaperTestClient({
         {status === 'testing' && (
           <div className="text-center py-16 space-y-8 animate-fade-in">
             <h2 className="text-lg font-bold text-gray-500">試験中...</h2>
-            
+
             <div className="text-7xl font-mono font-bold text-blue-600 tabular-nums">
               {formatTime(elapsedSeconds)}
             </div>
-            
+
             <p className="text-sm text-gray-400">
-              問題を解き終わったら終了ボタンを押してください。<br/>
+              問題を解き終わったら終了ボタンを押してください。<br />
               解説が表示され、採点へ進みます。
             </p>
 
-            <button 
+            <button
               onClick={handleStopTest}
               className="bg-red-500 text-white px-10 py-4 rounded-full font-bold text-lg shadow-lg hover:bg-red-600 transition"
             >
@@ -273,21 +291,21 @@ export default function PaperTestClient({
         {/* State 3: Grading (採点中 - レイアウト変更) */}
         {status === 'grading' && (
           <div className="space-y-8 animate-fade-in">
-            
+
             <div className="bg-blue-50 p-4 rounded-lg border border-blue-100 flex justify-between items-center">
-               <span className="font-bold text-blue-900">⏱️ 所要時間: {formatTime(elapsedSeconds)}</span>
-               <span className="text-sm text-blue-700">解説を見て自己採点してください</span>
+              <span className="font-bold text-blue-900">⏱️ 所要時間: {formatTime(elapsedSeconds)}</span>
+              <span className="text-sm text-blue-700">解説を見て自己採点してください</span>
             </div>
 
             {/* ★変更: 2カラムレイアウト (左:PDF / 右:QR&入力) */}
             <div className="flex flex-col lg:flex-row gap-6">
-              
+
               {/* 左カラム: 解説PDF */}
               <div className="flex-1">
                 {unit.answer_url ? (
                   <div className="bg-gray-100 rounded-xl p-4 h-[70vh] border border-gray-200">
-                    <iframe 
-                      src={unit.answer_url} 
+                    <iframe
+                      src={unit.answer_url}
                       className="w-full h-full rounded bg-white shadow-sm"
                       title="Answer PDF"
                     />
@@ -301,16 +319,16 @@ export default function PaperTestClient({
 
               {/* 右カラム: サイドバー */}
               <div className="w-full lg:w-80 space-y-6">
-                
+
                 {/* 1. 答案アップロードQR */}
                 <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm text-center">
                   <h3 className="font-bold text-gray-800 mb-2 flex items-center justify-center gap-2">
                     <span>📸</span> 答案を提出
                   </h3>
                   <p className="text-xs text-gray-500 mb-4">
-                    スマホで読み取って<br/>答案の写真をアップロードしてください
+                    スマホで読み取って<br />答案の写真をアップロードしてください
                   </p>
-                  
+
                   <div className="bg-white p-2 rounded inline-block border border-gray-100">
                     {uploadUrl ? (
                       <QRCodeSVG value={uploadUrl} size={140} />
@@ -331,7 +349,7 @@ export default function PaperTestClient({
                   <p className="text-sm text-gray-500 mb-6">
                     満点: {maxScore}点
                   </p>
-                  
+
                   <form onSubmit={handleSubmit} className="flex flex-col items-center gap-4">
                     <div className="flex items-center gap-2">
                       <input
@@ -347,8 +365,8 @@ export default function PaperTestClient({
                       />
                       <span className="text-xl font-bold text-blue-800">/ {maxScore}</span>
                     </div>
-                    
-                    <button 
+
+                    <button
                       type="submit"
                       className="bg-blue-600 text-white px-6 py-3 rounded-full font-bold hover:bg-blue-700 transition shadow-sm w-full"
                     >
@@ -369,7 +387,7 @@ export default function PaperTestClient({
               {displayScore >= maxScore * 0.8 ? "🏆" : displayScore >= maxScore * 0.6 ? "👍" : "💪"}
             </div>
             <h2 className="text-2xl font-bold text-gray-900">採点完了！</h2>
-            
+
             <div className="text-4xl font-extrabold text-blue-600 my-4">
               {displayScore} <span className="text-xl text-gray-400 font-normal">/ {maxScore}</span>
             </div>
@@ -377,9 +395,9 @@ export default function PaperTestClient({
             <p className="text-gray-600 max-w-lg mx-auto leading-relaxed whitespace-pre-wrap">
               {unit.outro || "お疲れ様でした！結果は保存されました。"}
             </p>
-            
+
             <div className="flex justify-center gap-4 pt-4">
-              <button 
+              <button
                 onClick={handleRetry}
                 className="bg-white border-2 border-blue-600 text-blue-600 px-6 py-2 rounded-full font-bold hover:bg-blue-50 transition"
               >

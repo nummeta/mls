@@ -2,9 +2,12 @@
 
 import { useState, useMemo, useEffect, useRef } from "react";
 import { startSession, completeSession, saveAttempt } from "./actions";
+import { handleUnitCompletion, createSupportTicket, type UnitCompletionResult } from "./dialogue-actions";
 import { createClient } from "@/utils/supabase/client";
 import Latex from "react-latex-next";
 import "katex/dist/katex.min.css";
+import DialoguePromptModal from "@/components/DialoguePromptModal";
+import TicketWaitingView from "@/components/TicketWaitingView";
 
 // --- 型定義 ---
 type Choice = {
@@ -46,23 +49,31 @@ function shuffleArray<T>(array: T[]): T[] {
   return newArray;
 }
 
-export default function LessonClient({ 
-  unit, 
-  userId, 
-  score 
-}: { 
-  unit: Unit; 
-  userId: string; 
+export default function LessonClient({
+  unit,
+  userId,
+  score,
+  nextUnitId
+}: {
+  unit: Unit;
+  userId: string;
   score: Score | null;
+  nextUnitId?: string | null;
 }) {
   const supabase = createClient();
   const isAlreadyCompleted = !!score?.is_completed || (score?.progress_rate === 1);
 
   const [step, setStep] = useState<'intro' | 'video' | 'quiz' | 'outro'>('intro');
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-  
+
   const [isRequesting, setIsRequesting] = useState(false);
-  
+
+  // ★対話フロー用ステート
+  const [showDialogueModal, setShowDialogueModal] = useState(false);
+  const [dialogueResult, setDialogueResult] = useState<UnitCompletionResult | null>(null);
+  const [isCreatingTicket, setIsCreatingTicket] = useState(false);
+  const [activeTicketId, setActiveTicketId] = useState<string | null>(null);
+
   // ★追加: クリア済みのクイズタイプ(トピック)IDを管理
   // これにより「何種類のトピックを理解したか」を計算します
   const [clearedTypeIds, setClearedTypeIds] = useState<Set<string>>(new Set());
@@ -82,11 +93,11 @@ export default function LessonClient({
 
       const { data, error } = await supabase.from("profiles").update({
         current_unit_id: unit.id,
-        current_unit_started_at: new Date().toISOString(), 
+        current_unit_started_at: new Date().toISOString(),
         last_seen_at: new Date().toISOString(),
       })
-      .eq("id", userId)
-      .select();
+        .eq("id", userId)
+        .select();
 
       if (error) {
         console.error("❌ [initUnit] DB更新エラー:", error);
@@ -116,7 +127,7 @@ export default function LessonClient({
     updateActivity();
     const interval = setInterval(updateActivity, 30000);
     return () => clearInterval(interval);
-  }, [unit.id, userId, step]); 
+  }, [unit.id, userId, step]);
 
   // --- 3. リクエスト状態の確認 ---
   useEffect(() => {
@@ -126,8 +137,8 @@ export default function LessonClient({
         .select("id")
         .eq("student_id", userId)
         .eq("status", "pending")
-        .limit(1); 
-      
+        .limit(1);
+
       if (error) {
         console.error("❌ リクエスト確認エラー:", error);
         return;
@@ -135,9 +146,9 @@ export default function LessonClient({
       setIsRequesting(!!data && data.length > 0);
     };
     checkRequest();
-    
+
     const channel = supabase.channel("my_request_status")
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'help_requests', filter: `student_id=eq.${userId}` }, 
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'help_requests', filter: `student_id=eq.${userId}` },
         () => checkRequest()
       )
       .subscribe();
@@ -162,11 +173,11 @@ export default function LessonClient({
     const list: QuizWithMeta[] = [];
     unit.quiz_types?.forEach(qt => {
       qt.quizzes.forEach(q => {
-        list.push({ 
-          ...q, 
+        list.push({
+          ...q,
           choices: shuffleArray(q.choices),
-          typeId: qt.id, 
-          typeTopic: qt.topic 
+          typeId: qt.id,
+          typeTopic: qt.topic
         });
       });
     });
@@ -195,18 +206,18 @@ export default function LessonClient({
   const [selectedChoiceId, setSelectedChoiceId] = useState<string | null>(null);
   const [showExplanation, setShowExplanation] = useState(false);
   const [isQuizAdded, setIsQuizAdded] = useState(false);
-  
+
   const currentQuiz = quizQueue[currentQuizIndex];
 
   const handleStart = async () => {
     try {
       const session = await startSession(unit.id, userId);
       setCurrentSessionId(session.id);
-      setStep('video'); 
+      setStep('video');
     } catch (e) {
       console.error(e);
       alert("セッション開始エラー");
-      setStep('video'); 
+      setStep('video');
     }
   };
 
@@ -235,7 +246,7 @@ export default function LessonClient({
 
     // ★修正: 正解数をローカルで計算
     let currentClearedCount = clearedTypeIds.size;
-    
+
     if (choice.is_correct) {
       // 正解した場合、まだクリアしていないタイプならセットに追加
       if (!clearedTypeIds.has(currentQuiz.typeId)) {
@@ -246,9 +257,9 @@ export default function LessonClient({
       }
     } else {
       // 不正解時の追加出題ロジック
-      let candidates = allPoolQuizzes.filter(q => 
-        q.typeId === currentQuiz.typeId && 
-        !quizQueue.some(queued => queued.id === q.id) 
+      let candidates = allPoolQuizzes.filter(q =>
+        q.typeId === currentQuiz.typeId &&
+        !quizQueue.some(queued => queued.id === q.id)
       );
       if (candidates.length === 0) {
         candidates = allPoolQuizzes.filter(q => q.typeId === currentQuiz.typeId);
@@ -263,12 +274,12 @@ export default function LessonClient({
     // ★修正: 0,0 ではなく、計算した値を渡す
     if (currentSessionId) {
       await saveAttempt(
-        currentSessionId, 
-        userId, 
-        currentQuiz.id, 
-        choice.id, 
-        choice.is_correct, 
-        unit.id, 
+        currentSessionId,
+        userId,
+        currentQuiz.id,
+        choice.id,
+        choice.is_correct,
+        unit.id,
         currentClearedCount, // クリア済みトピック数
         totalTypeCount       // トピック総数
       );
@@ -288,6 +299,57 @@ export default function LessonClient({
     if (currentSessionId) {
       await completeSession(currentSessionId);
     }
+
+    // ★対話フロー判定
+    try {
+      const result = await handleUnitCompletion(unit.id);
+      setDialogueResult(result);
+
+      if (result.action === 'prompt_dialogue') {
+        // 講師に余裕がある → モーダル表示
+        setShowDialogueModal(true);
+      } else {
+        // サイレントスキップ → そのまま完了画面へ
+        setStep('outro');
+      }
+    } catch (e) {
+      console.error('Dialogue flow error:', e);
+      setStep('outro');
+    }
+  };
+
+  // ★対話に挑戦する
+  const handleAcceptDialogue = async () => {
+    if (!dialogueResult) return;
+
+    setIsCreatingTicket(true);
+    try {
+      const { ticketId } = await createSupportTicket(dialogueResult.pendingUnitIds);
+      setActiveTicketId(ticketId);
+      setShowDialogueModal(false);
+    } catch (e) {
+      console.error('Ticket creation error:', e);
+      alert('チケット作成に失敗しました');
+    } finally {
+      setIsCreatingTicket(false);
+    }
+  };
+
+  // ★対話をスキップ
+  const handleSkipDialogue = () => {
+    setShowDialogueModal(false);
+    setStep('outro');
+  };
+
+  // ★Zoom案内後
+  const handleDialogueAssigned = (roomName: string) => {
+    // 講師が割り当てられた（UIはTicketWaitingViewで表示）
+    console.log('Assigned to room:', roomName);
+  };
+
+  // ★チケットキャンセル後
+  const handleTicketCancelled = () => {
+    setActiveTicketId(null);
     setStep('outro');
   };
 
@@ -297,7 +359,7 @@ export default function LessonClient({
 
   return (
     <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-      
+
       {/* ヘッダー */}
       <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-white sticky top-0 z-20 shadow-sm">
         <div className="flex items-center gap-4">
@@ -312,11 +374,10 @@ export default function LessonClient({
         {/* 呼び出しボタン */}
         <button
           onClick={handleToggleRequest}
-          className={`px-4 py-2 rounded-lg font-bold shadow-sm transition flex items-center gap-2 text-sm ${
-            isRequesting 
-              ? "bg-red-50 text-red-600 border border-red-200 hover:bg-red-100"
-              : "bg-yellow-400 text-yellow-900 hover:bg-yellow-300"
-          }`}
+          className={`px-4 py-2 rounded-lg font-bold shadow-sm transition flex items-center gap-2 text-sm ${isRequesting
+            ? "bg-red-50 text-red-600 border border-red-200 hover:bg-red-100"
+            : "bg-yellow-400 text-yellow-900 hover:bg-yellow-300"
+            }`}
         >
           {isRequesting ? (
             <>✋ キャンセル</>
@@ -327,7 +388,7 @@ export default function LessonClient({
       </div>
 
       <div className="p-6">
-        
+
         {/* Intro */}
         {step === 'intro' && (
           <div className="text-center py-10 space-y-6">
@@ -336,7 +397,7 @@ export default function LessonClient({
             <p className="text-gray-600 max-w-lg mx-auto leading-relaxed whitespace-pre-wrap">
               <Latex>{unit.intro || "準備はいいですか？"}</Latex>
             </p>
-            <button 
+            <button
               onClick={handleStart}
               className="bg-blue-600 text-white px-8 py-3 rounded-full font-bold shadow-lg hover:bg-blue-700 transition transform hover:-translate-y-0.5"
             >
@@ -350,11 +411,11 @@ export default function LessonClient({
           <div className="space-y-6 animate-fade-in">
             {unit.video_url ? (
               <div className="aspect-video bg-black rounded-lg overflow-hidden shadow-lg">
-                <video 
-                  src={unit.video_url} 
-                  controls 
+                <video
+                  src={unit.video_url}
+                  controls
                   className="w-full h-full"
-                  onEnded={handleVideoEnd} 
+                  onEnded={handleVideoEnd}
                 />
               </div>
             ) : (
@@ -362,9 +423,9 @@ export default function LessonClient({
                 動画なし
               </div>
             )}
-            
+
             <div className="text-center">
-              <button 
+              <button
                 onClick={handleVideoEnd}
                 className="text-gray-400 text-sm underline hover:text-gray-600"
               >
@@ -380,7 +441,7 @@ export default function LessonClient({
             <div className="mb-4 flex justify-between items-center text-sm text-gray-500 font-bold">
               <span>理解度チェック: Q{currentQuizIndex + 1} / {quizQueue.length}</span>
             </div>
-            
+
             <h3 className="text-lg font-bold text-gray-900 mb-6 p-4 bg-gray-50 rounded-lg">
               <Latex>{currentQuiz.question}</Latex>
             </h3>
@@ -388,15 +449,15 @@ export default function LessonClient({
             <div className="space-y-3">
               {currentQuiz.choices.map((choice) => {
                 let btnClass = "w-full p-4 rounded-lg border-2 text-left transition relative ";
-                
+
                 if (selectedChoiceId === choice.id) {
-                  btnClass += choice.is_correct 
-                    ? "border-green-500 bg-green-100 text-green-900 font-bold" 
-                    : "border-red-500 bg-red-100 text-red-900 font-bold";     
+                  btnClass += choice.is_correct
+                    ? "border-green-500 bg-green-100 text-green-900 font-bold"
+                    : "border-red-500 bg-red-100 text-red-900 font-bold";
                 } else if (showExplanation && choice.is_correct) {
-                  btnClass += "border-green-500 bg-green-50 text-green-900"; 
+                  btnClass += "border-green-500 bg-green-50 text-green-900";
                 } else {
-                  btnClass += "border-gray-200 text-gray-900 hover:border-blue-400 hover:bg-blue-50"; 
+                  btnClass += "border-gray-200 text-gray-900 hover:border-blue-400 hover:bg-blue-50";
                 }
 
                 return (
@@ -424,18 +485,18 @@ export default function LessonClient({
             {showExplanation && (
               <div className="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-100 animate-slide-up">
                 <p className="font-bold text-blue-900 mb-2">
-                  {selectedChoiceId && currentQuiz.choices.find(c => c.id === selectedChoiceId)?.is_correct 
-                    ? "正解！" 
+                  {selectedChoiceId && currentQuiz.choices.find(c => c.id === selectedChoiceId)?.is_correct
+                    ? "正解！"
                     : "残念..."}
                 </p>
                 <div className="text-blue-800 text-sm mb-4">
                   <Latex>{currentQuiz.choices.find(c => c.is_correct)?.explanation || "解説はありません"}</Latex>
                 </div>
-                
+
                 {selectedChoiceId && !currentQuiz.choices.find(c => c.id === selectedChoiceId)?.is_correct && isQuizAdded && (
-                   <p className="text-xs text-red-500 font-bold mb-4">
-                     ※ 理解を深めるため、同じトピックから問題を追加しました。
-                   </p>
+                  <p className="text-xs text-red-500 font-bold mb-4">
+                    ※ 理解を深めるため、同じトピックから問題を追加しました。
+                  </p>
                 )}
 
                 <button
@@ -458,20 +519,48 @@ export default function LessonClient({
               <Latex>{unit.outro || "お疲れ様でした！"}</Latex>
             </p>
             <div className="flex justify-center gap-4 pt-4">
-              <button 
+              <button
                 onClick={handleRetry}
                 className="bg-white border-2 border-blue-600 text-blue-600 px-6 py-2 rounded-full font-bold hover:bg-blue-50 transition"
               >
                 最初から復習する
               </button>
-              <button disabled className="bg-gray-100 text-gray-400 px-6 py-2 rounded-full font-bold cursor-default">
-                完了済み
-              </button>
+              {nextUnitId ? (
+                <a
+                  href={`/units/${nextUnitId}`}
+                  className="bg-blue-600 text-white px-6 py-2 rounded-full font-bold hover:bg-blue-700 transition"
+                >
+                  次の単元へ →
+                </a>
+              ) : (
+                <button disabled className="bg-gray-100 text-gray-400 px-6 py-2 rounded-full font-bold cursor-default">
+                  完了済み
+                </button>
+              )}
             </div>
           </div>
         )}
 
       </div>
+
+      {/* ★対話誘導モーダル */}
+      <DialoguePromptModal
+        isOpen={showDialogueModal}
+        pendingUnitNames={dialogueResult?.pendingUnitNames || []}
+        onAccept={handleAcceptDialogue}
+        onSkip={handleSkipDialogue}
+        isLoading={isCreatingTicket}
+      />
+
+      {/* ★チケット待機UI */}
+      {activeTicketId && (
+        <TicketWaitingView
+          ticketId={activeTicketId}
+          onAssigned={handleDialogueAssigned}
+          onCancelled={handleTicketCancelled}
+          onNavigateToZoom={() => setActiveTicketId(null)}
+        />
+      )}
     </div>
   );
 }

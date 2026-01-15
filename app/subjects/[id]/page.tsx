@@ -92,7 +92,7 @@ export default async function SubjectPage({
             const max = unit.max_score || 100;
             const raw = score?.raw_score || 0;
             const rate = raw / max; // 得点率 (0.0 ~ 1.0)
-            
+
             const isCleared = rate >= 0.8; // 8割以上で合格
             const isAttempted = !!score;   // 受験済み
 
@@ -109,7 +109,7 @@ export default async function SubjectPage({
               // 1つ前のテストを「受験」していないと次は開かない
               const prevUnit = units[index - 1];
               const prevScore = scoreMap.get(prevUnit.id);
-              
+
               if (!prevScore) {
                 isLocked = true;
                 lockReason = "前のセットを受験すると解放されます";
@@ -121,7 +121,7 @@ export default async function SubjectPage({
               <div className={`
                 relative rounded-xl p-5 border-2 transition-all duration-200
                 flex justify-between items-center overflow-hidden
-                ${isLocked 
+                ${isLocked
                   ? "bg-gray-100 border-gray-200 cursor-not-allowed opacity-70 grayscale" // ロック時
                   : isCleared
                     ? "bg-green-50/30 border-green-200 hover:shadow-md" // クリア済み
@@ -133,21 +133,21 @@ export default async function SubjectPage({
                 <div className="flex items-center gap-4 relative z-10">
                   <div className={`
                     w-12 h-12 rounded-xl flex items-center justify-center text-2xl shadow-sm
-                    ${isLocked 
-                      ? "bg-gray-200 text-gray-400" 
-                      : isCleared 
-                        ? "bg-white text-green-600" 
+                    ${isLocked
+                      ? "bg-gray-200 text-gray-400"
+                      : isCleared
+                        ? "bg-white text-green-600"
                         : "bg-gray-100 text-gray-400"
                     }
                   `}>
                     {isLocked ? "🔒" : isCleared ? "🏆" : "✍️"}
                   </div>
-                  
+
                   <div>
                     <h4 className={`font-bold text-lg transition-colors ${isLocked ? "text-gray-500" : "text-gray-800"}`}>
                       {unit.name}
                     </h4>
-                    
+
                     {isLocked ? (
                       <p className="text-xs text-gray-500 font-bold mt-1">
                         ※ {lockReason}
@@ -155,8 +155,8 @@ export default async function SubjectPage({
                     ) : isAttempted ? (
                       <div className="flex items-center gap-3 mt-1">
                         <span className={`text-xs font-bold px-2 py-0.5 rounded shadow-sm border
-                          ${isCleared 
-                            ? "bg-white border-green-100 text-green-600" 
+                          ${isCleared
+                            ? "bg-white border-green-100 text-green-600"
                             : "bg-white border-orange-100 text-orange-600"
                           }
                         `}>
@@ -229,10 +229,10 @@ export default async function SubjectPage({
       <div className="max-w-4xl mx-auto px-6 py-10 space-y-10">
         {sortedSections.map((section) => {
           const sortedUnits = section.units.sort((a, b) => a.sort_order - b.sort_order);
-          
+
           const inputUnits = sortedUnits.filter(u => u.type !== 'test');
           const allTestUnits = sortedUnits.filter(u => u.type === 'test');
-          
+
           // 名前で基本・応用に振り分け
           const basicTests = allTestUnits.filter(u => !u.name.includes("応用"));
           const advancedTests = allTestUnits.filter(u => u.name.includes("応用"));
@@ -260,7 +260,7 @@ export default async function SubjectPage({
                       <span className="w-2 h-2 rounded-full bg-blue-400"></span>
                       Input Learning
                     </h3>
-                    <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="grid gap-3">
                       {inputUnits.map((unit) => {
                         const score = scoreMap.get(unit.id);
                         const isCompleted = score?.progress_rate === 1;
@@ -270,8 +270,8 @@ export default async function SubjectPage({
                             <div className={`
                               relative bg-white rounded-xl p-4 border transition-all duration-200
                               hover:shadow-lg hover:-translate-y-0.5
-                              ${isCompleted 
-                                ? "border-l-4 border-l-green-400 border-gray-100 bg-gray-50/50" 
+                              ${isCompleted
+                                ? "border-l-4 border-l-green-400 border-gray-100 bg-gray-50/50"
                                 : "border-gray-200 hover:border-blue-300"
                               }
                             `}>
@@ -282,7 +282,7 @@ export default async function SubjectPage({
                                 `}>
                                   {isCompleted ? "✔" : "📺"}
                                 </div>
-                                
+
                                 <div className="flex-1 min-w-0">
                                   <h4 className={`font-bold truncate pr-2 ${isCompleted ? "text-gray-600" : "text-gray-900 group-hover:text-blue-600"}`}>
                                     {unit.name}
@@ -314,10 +314,10 @@ export default async function SubjectPage({
                 )}
 
                 {/* --- Output Units (テスト) --- */}
-                
+
                 {/* 基本問題: ロックなし (セクションロックはfalse) */}
                 {renderTestList(basicTests, "Basic Challenge (基本)", "bg-green-400", false)}
-                
+
                 {/* 応用問題: 基本問題クリア条件あり (hasPassedBasicがfalseならロック) */}
                 {renderTestList(advancedTests, "Advanced Challenge (応用)", "bg-orange-400", !hasPassedBasic)}
 

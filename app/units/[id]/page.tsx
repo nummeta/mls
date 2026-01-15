@@ -24,6 +24,7 @@ export default async function UnitPage({
     .select(`
       *,
       sections (
+        id,
         subject_id
       ),
       quiz_types (
@@ -55,6 +56,22 @@ export default async function UnitPage({
     .single();
 
   const subjectId = (unit.sections as any)?.subject_id;
+  const sectionId = (unit.sections as any)?.id;
+
+  // 3. ★追加: 次の単元を取得（同じセクション内で sort_order が次のもの）
+  let nextUnitId: string | null = null;
+  if (sectionId) {
+    const { data: nextUnit } = await supabase
+      .from("units")
+      .select("id")
+      .eq("section_id", sectionId)
+      .gt("sort_order", unit.sort_order)
+      .order("sort_order", { ascending: true })
+      .limit(1)
+      .single();
+
+    nextUnitId = nextUnit?.id || null;
+  }
 
   // クライアントコンポーネントに渡すpropsをまとめる
   const commonProps = {
@@ -73,14 +90,14 @@ export default async function UnitPage({
           </Link>
         )}
       </div>
-      
+
       {/* タイプによって出し分け */}
       {unit.type === 'test' ? (
         // ★ scoreを追加で渡す
         <PaperTestClient {...commonProps} />
       ) : (
-        // ★ scoreを追加で渡す
-        <LessonClient {...commonProps} />
+        // ★ nextUnitIdを追加で渡す
+        <LessonClient {...commonProps} nextUnitId={nextUnitId} />
       )}
     </div>
   );
